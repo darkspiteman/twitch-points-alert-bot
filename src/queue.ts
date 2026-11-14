@@ -1,7 +1,11 @@
 import { EventEmitter } from 'node:events';
 import type { ScopedLogger } from './logger.ts';
 
-export interface MediaRef { id: string; url: string; kind: 'audio' | 'video' | 'image'; mime: string }
+export interface MediaRef {
+  id: string; url: string; kind: 'audio' | 'video' | 'image'; mime: string;
+  /** Онлайн-медиа (Klipy): «тип/slug»; адрес подставляется перед показом. */
+  remote?: string;
+}
 
 export interface PlayItem {
   id: string;
@@ -20,6 +24,8 @@ export interface PlayItem {
   caption: string | null;
   /** Убрать зелёный фон у видео. */
   chromaKey?: boolean;
+  /** Запасной звук, если онлайн-медиа не загрузилось. */
+  fallbackAudio?: MediaRef | null;
   source: 'eventsub' | 'recovery' | 'test' | 'simulate';
   createdAt: number;
 }
@@ -59,17 +65,22 @@ export class PlaybackQueue extends EventEmitter {
   private wakeTimer: NodeJS.Timeout | null = null;
   private disposed = false;
 
-  constructor(transport: OverlayTransport, getSettings: () => QueueSettings, log: ScopedLogger) {
+  /** Подготовка элемента перед показом (адреса онлайн-медиа). Ошибка — элемент завершается с 'failed'. */
+  private prepare: ((item: PlayItem) => Promise<PlayItem>) | null;
+  private preparing: PlayItem | null = null;
+
+  constructor(transport: OverlayTransport, getSettings: () => QueueSettings, log: ScopedLogger, prepare?: (item: PlayItem) => Promise<PlayItem>) {
     super();
     this.transport = transport;
     this.getSettings = getSettings;
     this.log = log;
+    this.prepare = prepare ?? null;
   }
 
   snapshot() {
     return {
       paused: this.paused,
-      current: this.current ? { ...summary(this.current.item), startedAt: this.current.startedAt } : null,
+      current: this.current ? { ...summary(this.current.item), startedAt: this.current.startedAt } : this.preparing ? { ...summary(this.preparing), startedAt: Date.now() } : null,
       items: this.items.map(summary),
     };
   }
@@ -167,24 +178,45 @@ export class PlaybackQueue extends EventEmitter {
       const ids = this.transport.overlayIds();
       if (ids.length === 0) return this.pump();
       this.items.shift();
-      const duration = this.effectiveDuration(item, s);
-      const hardLimit = (duration > 0 ? duration : s.maxDurationMs) + 5000;
-      const timer = setTimeout(() => {
-        this.log.warn(`Overlay не сообщил об окончании «${item.rewardTitle}» за ${hardLimit} мс — переходим к следующему`);
-        this.transport.stop(item.id);
-        this.finish('done', 'Завершено по таймауту');
-      }, hardLimit);
-      timer.unref?.();
-      this.current = { item, pending: new Set(ids), errors: [], timer, startedAt: Date.now() };
-      this.changed();
-      this.emit('started', item);
-      try {
-        this.transport.play(ids, item, duration);
-      } catch (e) {
-        this.log.error('Не удалось отправить элемент в overlay', e);
-        this.finish('failed', 'Не удалось отправить в overlay');
+      if (this.prepare && (item.visual?.remote || item.audio?.remote)) {
+        this.busy = true;
+        this.preparing = item;
+        this.prepare(item).then(
+          (ready) => { this.busy = false; this.preparing = null; if (!this.disposed) this.start(ready); },
+          (e: Error) => {
+            this.busy = false; this.preparing = null;
+            if (this.disposed) return;
+            this.emit('finished', { item, result: 'failed', message: `Ошибка воспроизведения: ${e.message}` });
+            this.changed();
+            this.pump();
+          });
+        return;
       }
+      this.start(item);
     });
+  }
+
+  private start(item: PlayItem): void {
+    const s = this.getSettings();
+    const ids = this.transport.overlayIds();
+    if (ids.length === 0) { this.items.unshift(item); this.changed(); return this.pump(); }
+    const duration = this.effectiveDuration(item, s);
+    const hardLimit = (duration > 0 ? duration : s.maxDurationMs) + 5000;
+    const timer = setTimeout(() => {
+      this.log.warn(`Overlay не сообщил об окончании «${item.rewardTitle}» за ${hardLimit} мс — переходим к следующему`);
+      this.transport.stop(item.id);
+      this.finish('done', 'Завершено по таймауту');
+    }, hardLimit);
+    timer.unref?.();
+    this.current = { item, pending: new Set(ids), errors: [], timer, startedAt: Date.now() };
+    this.changed();
+    this.emit('started', item);
+    try {
+      this.transport.play(ids, item, duration);
+    } catch (e) {
+      this.log.error('Не удалось отправить элемент в overlay', e);
+      this.finish('failed', 'Не удалось отправить в overlay');
+    }
   }
 
   private finish(result: ItemResult, message: string): void {
@@ -217,6 +249,7 @@ export class PlaybackQueue extends EventEmitter {
     this.disposed = true;
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     const left = [...this.items];
+    if (this.preparing) { left.unshift(this.preparing); this.preparing = null; }
     if (this.current) { clearTimeout(this.current.timer); left.unshift(this.current.item); this.current = null; }
     this.items = [];
     return left;

@@ -35,6 +35,8 @@ export class Hub implements OverlayTransport {
   onOverlayConnected: (info: OverlayInfo) => void = () => {};
   onOverlayDisconnected: (id: string) => void = () => {};
   onMediaProbe: (mediaId: string, ok: boolean, durationMs: number, message: string) => void = () => {};
+  /** Overlay не смог загрузить онлайн-медиа и сыграл запасной звук. */
+  onOverlayFallback: (itemId: string, message: string) => void = () => {};
 
   constructor(log: ScopedLogger, getView: () => OverlayView, allowedOrigins: () => string[]) {
     this.log = log;
@@ -77,6 +79,7 @@ export class Hub implements OverlayTransport {
             break;
           case 'ended': if (m.id) this.onOverlayResult(id, String(m.id), 'ended'); break;
           case 'error': if (m.id) this.onOverlayResult(id, String(m.id), 'error', String(m.message ?? '').slice(0, 300)); break;
+          case 'fallback': if (m.id) this.onOverlayFallback(String(m.id), String(m.message ?? '').slice(0, 300)); break;
           case 'pong': break;
         }
       } catch (e) { this.log.error('Ошибка обработки сообщения overlay', e); }
@@ -134,7 +137,7 @@ export class Hub implements OverlayTransport {
     const msg = {
       type: 'play',
       item: {
-        id: item.id, visual: item.visual, audio: item.audio, caption: item.caption, chromaKey: !!item.chromaKey,
+        id: item.id, visual: item.visual, audio: item.audio, fallbackAudio: item.fallbackAudio ?? null, caption: item.caption, chromaKey: !!item.chromaKey,
         volume: Math.max(0, Math.min(1, item.volume * (view.masterVolume / 100))),
         durationMs: effectiveDurationMs, maxDurationMs: view.maxDurationMs,
       },

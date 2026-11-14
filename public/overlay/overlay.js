@@ -154,7 +154,17 @@
     root.className = 'alert';
     state.root = root;
 
-    var fail = function (text) { finish(state, text || 'ошибка воспроизведения', false); };
+    var fail = function (text) {
+      // Онлайн-медиа (Klipy) не загрузилось — играем запасной звук награды под тем же id.
+      if (item.fallbackAudio && !state.done && (item.visual && item.visual.remote || item.audio && item.audio.remote)) {
+        var fb = item.fallbackAudio;
+        send({ type: 'fallback', id: item.id, message: text || '' });
+        finish(state, null, true);
+        play({ id: item.id, visual: null, audio: fb, fallbackAudio: null, caption: item.caption, volume: item.volume, durationMs: 0, maxDurationMs: item.maxDurationMs });
+        return;
+      }
+      finish(state, text || 'ошибка воспроизведения', false);
+    };
     var oneEnded = function () {
       state.waiting--;
       if (state.waiting <= 0 && !(item.durationMs > 0)) finish(state, null, false);

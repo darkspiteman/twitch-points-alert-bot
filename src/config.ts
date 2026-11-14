@@ -75,6 +75,26 @@ export interface Settings {
   manageRedemptionStatus: boolean;
   /** Общий выключатель видео: true — все награды только со звуком. */
   audioOnly: boolean;
+  /** Ключ API Klipy (поиск мемов). Никогда не отдаётся в панель целиком и не пишется в логи. */
+  klipyApiKey: string;
+  /** Ключ API Freesound (поиск звуков). */
+  freesoundApiKey: string;
+  /** Фильтр «взрослого» контента Klipy. */
+  klipyContentFilter: 'off' | 'low' | 'medium' | 'high';
+}
+
+export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey'] as const;
+
+/** Маска ключа для панели: «••••abcd» или пустая строка. */
+export function maskSecret(v: string): string {
+  return v ? `••••${v.slice(-4)}` : '';
+}
+
+/** Настройки для отправки в панель: ключи API заменены маской. */
+export function publicSettings(s: Settings): Settings {
+  const out = { ...s };
+  for (const k of SECRET_SETTINGS) out[k] = maskSecret(s[k]);
+  return out;
 }
 
 export function defaultSettings(): Settings {
@@ -103,6 +123,9 @@ export function defaultSettings(): Settings {
     recoverMissed: true,
     manageRedemptionStatus: true,
     audioOnly: false,
+    klipyApiKey: '',
+    freesoundApiKey: '',
+    klipyContentFilter: 'medium',
   };
 }
 
@@ -146,6 +169,14 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (v && !/^[a-z0-9]{20,40}$/i.test(v)) throw new Error('Client ID выглядит неверно: ожидается 30 латинских букв и цифр из dev.twitch.tv/console');
           out[k] = v; break;
         }
+        case 'klipyApiKey': case 'freesoundApiKey': {
+          const v = String(patch[k] ?? '').trim();
+          if (v && !/^[A-Za-z0-9_-]{8,128}$/.test(v)) throw new Error('Ключ API выглядит неверно: ожидаются латинские буквы и цифры без пробелов. Скопируйте его ещё раз.');
+          out[k] = v; break;
+        }
+        case 'klipyContentFilter':
+          if (!['off', 'low', 'medium', 'high'].includes(String(patch[k]))) throw new Error('Неверный уровень фильтра контента');
+          out[k] = patch[k]; break;
         case 'captionTemplate': {
           const v = String(patch[k] ?? '');
           if (v.length > 200) throw new Error('Шаблон подписи слишком длинный');

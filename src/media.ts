@@ -73,13 +73,18 @@ export function sanitizeDisplayName(name: string): string {
   return (base || 'file').slice(0, 120);
 }
 
+/** Дополнительные сведения о происхождении файла. */
+export interface MediaOrigin { source?: MediaRow['source']; attribution?: string; source_url?: string }
+
+export function isRemote(row: Pick<MediaRow, 'source'>): boolean { return row.source === 'klipy'; }
+
 export class MediaLibrary {
   private db: Db;
   private dir: string;
   constructor(db: Db, dir: string) { this.db = db; this.dir = path.resolve(dir); }
 
   /** Сохранение загруженного файла с проверкой формата. Бросает Error с понятным сообщением. */
-  add(originalName: string, data: Buffer): MediaRow {
+  add(originalName: string, data: Buffer, origin: MediaOrigin = {}): MediaRow {
     if (data.length === 0) throw new Error('Файл пустой');
     if (data.length > MAX_UPLOAD_BYTES) throw new Error(`Файл больше ${MAX_UPLOAD_BYTES / 1024 / 1024} МБ`);
     const display = sanitizeDisplayName(originalName);
@@ -96,6 +101,35 @@ export class MediaLibrary {
     const row: MediaRow = {
       id, name: display, file_name: fileName, kind: fmt.kind, mime: fmt.mime, size: data.length, duration_ms: 0,
       status: warnings.length ? 'warning' : 'ok', status_msg: warnings.join(' '), created_at: Date.now(),
+      source: origin.source ?? 'upload', remote_ref: '', attribution: (origin.attribution ?? '').slice(0, 300), source_url: (origin.source_url ?? '').slice(0, 500),
+    };
+    this.db.insertMedia(row);
+    return row;
+  }
+
+  /**
+   * Сохранение скачанного файла, у которого может не быть расширения в имени (ссылка, Freesound):
+   * расширение определяется по содержимому.
+   */
+  addDownloaded(baseName: string, data: Buffer, origin: MediaOrigin): MediaRow {
+    if (data.length === 0) throw new Error('Файл пустой');
+    const fmt = sniffFormat(data);
+    if (!fmt) throw new Error('Содержимое файла не распознано: это не аудио, видео или картинка поддерживаемого формата');
+    let base = sanitizeDisplayName(baseName).replace(/\.(mp3|wav|ogg|oga|m4a|webm|mp4|m4v|gif|png|jpe?g|webp)$/i, '');
+    base = base.slice(0, 110) || 'file';
+    return this.add(`${base}.${fmt.ext}`, data, origin);
+  }
+
+  /**
+   * Онлайн-медиа (Klipy): файл не копируется на диск — по правилам сервиса он загружается
+   * с его сервера в момент показа. В базе хранится только идентификатор.
+   */
+  addRemote(opts: { name: string; kind: MediaRow['kind']; mime: string; remoteRef: string; attribution: string; sourceUrl: string; source: 'klipy' }): MediaRow {
+    const id = crypto.randomUUID();
+    const row: MediaRow = {
+      id, name: sanitizeDisplayName(opts.name).slice(0, 120), file_name: `remote:${id}`, kind: opts.kind, mime: opts.mime, size: 0, duration_ms: 0,
+      status: 'ok', status_msg: '', created_at: Date.now(), source: opts.source, remote_ref: opts.remoteRef,
+      attribution: opts.attribution.slice(0, 300), source_url: opts.sourceUrl.slice(0, 500),
     };
     this.db.insertMedia(row);
     return row;
@@ -103,6 +137,7 @@ export class MediaLibrary {
 
   /** Абсолютный путь файла медиа по ID. Путь строится только из имени, сгенерированного ботом. */
   filePath(row: MediaRow): string | null {
+    if (isRemote(row)) return null;
     if (!/^[0-9a-f-]{36}\.[a-z0-9]{2,5}$/.test(row.file_name)) return null;
     const full = path.resolve(this.dir, row.file_name);
     if (path.dirname(full) !== this.dir) return null;
@@ -110,6 +145,7 @@ export class MediaLibrary {
   }
 
   exists(row: MediaRow): boolean {
+    if (isRemote(row)) return !!row.remote_ref;
     const p = this.filePath(row);
     return !!p && fs.existsSync(p);
   }
@@ -130,6 +166,7 @@ export class MediaLibrary {
     let broken = 0;
     const rows = this.db.listMedia();
     for (const r of rows) {
+      if (isRemote(r)) continue;
       const p = this.filePath(r);
       if (!p || !fs.existsSync(p)) { this.db.updateMediaStatus(r.id, 'broken', 'Файл отсутствует на диске'); broken++; continue; }
       const fd = fs.openSync(p, 'r');
@@ -140,6 +177,6 @@ export class MediaLibrary {
       if (!fmt) { this.db.updateMediaStatus(r.id, 'broken', 'Файл повреждён: формат не распознан'); broken++; }
       else if (r.status === 'broken' && r.status_msg.startsWith('Файл')) this.db.updateMediaStatus(r.id, 'ok', '');
     }
-    return { checked: rows.length, broken };
+    return { checked: rows.filter((r) => !isRemote(r)).length, broken };
   }
 }

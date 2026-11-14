@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import type { App } from '../app.ts';
-import { PUBLIC_DIR, validateSettingsPatch } from '../config.ts';
+import { PUBLIC_DIR, validateSettingsPatch, publicSettings } from '../config.ts';
+import { FindError, KLIPY_TYPES, type KlipyType } from '../find.ts';
 import { HelixError } from '../twitch/helix.ts';
 import { MAX_UPLOAD_BYTES } from '../media.ts';
 import { getAutostart, setAutostart } from '../autostart.ts';
@@ -42,7 +43,8 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
 
   add('GET', '/api/state', async () => ({
     status: app.statusSummary(),
-    settings: app.db.getSettings(),
+    settings: publicSettings(app.db.getSettings()),
+    find: app.finder.status(),
     queue: app.queue.snapshot(),
     rewards: app.db.listRewards(),
     media: app.db.listMedia().map((m) => ({ ...m, usedBy: app.db.mediaUsage(m.id).map((r) => r.title) })),
@@ -80,8 +82,14 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     if (ok.allowManageRewards !== undefined && ok.allowManageRewards !== before.allowManageRewards && app.auth.state.status === 'ok') note = 'Права изменены — войдите в Twitch заново, чтобы применить.';
     if (ok.port !== undefined && ok.port !== before.port) note = 'Новый порт начнёт работать после перезапуска бота. Не забудьте изменить адрес в OBS.';
     if (ok.mode !== undefined) app.journal('info', 'settings', after.mode === 'observe' ? 'Включён режим наблюдения: оповещения не воспроизводятся' : 'Включён активный режим: оповещения воспроизводятся');
+    if (ok.klipyApiKey !== undefined || ok.freesoundApiKey !== undefined) {
+      app.finder.registerKeys();
+      const which = [ok.klipyApiKey !== undefined ? 'Klipy' : '', ok.freesoundApiKey !== undefined ? 'Freesound' : ''].filter(Boolean).join(' и ');
+      note = (ok.klipyApiKey || ok.freesoundApiKey) ? `Ключ ${which} сохранён.` : `Ключ ${which} удалён.`;
+      app.journal('info', 'settings', note); // сам ключ в журнал не пишется
+    }
     app.pushStatus();
-    return { settings: after, note };
+    return { settings: publicSettings(after), note, find: app.finder.status() };
   });
 
   add('POST', '/api/rewards/sync', async () => {
@@ -203,6 +211,47 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     return r;
   });
 
+  // ---------------- Найти медиа ----------------
+  const findErr = (e: unknown): never => {
+    if (e instanceof FindError) throw new HttpError(e.status, e.message);
+    throw e;
+  };
+  const klipyType = (v: unknown): KlipyType => {
+    const t = String(v ?? 'clips') as KlipyType;
+    if (!KLIPY_TYPES.includes(t)) throw new HttpError(400, 'Неизвестный раздел Klipy');
+    return t;
+  };
+  add('GET', '/api/find/klipy', async (req) => {
+    const q = new URL(req.url ?? '/', 'http://x').searchParams;
+    return app.finder.searchKlipy(klipyType(q.get('type')), q.get('q') ?? '', Number(q.get('page') ?? 1)).catch(findErr);
+  });
+  add('POST', '/api/find/klipy/add', async (_q, _r, _p, body) => {
+    const b = (body ?? {}) as { type?: string; slug?: string };
+    const row = await app.finder.addKlipy(klipyType(b.type), String(b.slug ?? '')).catch(findErr);
+    app.hub.broadcastPanel({ type: 'invalidate', what: 'media' });
+    return row;
+  });
+  add('GET', '/api/find/freesound', async (req) => {
+    const q = new URL(req.url ?? '/', 'http://x').searchParams;
+    return app.finder.searchFreesound(q.get('q') ?? '', Number(q.get('page') ?? 1), q.get('commercial') !== '0').catch(findErr);
+  });
+  add('POST', '/api/find/freesound/add', async (_q, _r, _p, body) => {
+    const row = await app.finder.addFreesound(Number((body as { id?: unknown } | null)?.id)).catch(findErr);
+    app.hub.broadcastPanel({ type: 'invalidate', what: 'media' });
+    return row;
+  });
+  add('POST', '/api/find/url', async (_q, _r, _p, body) => {
+    const row = await app.finder.importUrl(String((body as { url?: unknown } | null)?.url ?? '')).catch(findErr);
+    app.hub.broadcastPanel({ type: 'invalidate', what: 'media' });
+    return row;
+  });
+  /** Предпросмотр онлайн-медиа из медиатеки: свежий адрес файла на сервере Klipy. */
+  add('GET', '/api/media/:id/online', async (_q, _r, p) => {
+    const m = app.db.getMedia(p.id);
+    if (!m || m.source !== 'klipy') throw new HttpError(404, 'Онлайн-медиа не найдено');
+    return app.finder.resolveRemote(m.remote_ref, 10_000).catch(findErr);
+  });
+
   add('POST', '/api/test', () => {
     const r = app.router.testBuiltin();
     if (!r.ok) throw new HttpError(400, r.error ?? 'Ошибка теста');
@@ -306,8 +355,9 @@ function setSecurityHeaders(res: ServerResponse, port: number): void {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   res.setHeader('Content-Security-Policy', [
-    "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data: blob: https://static-cdn.jtvnw.net",
-    "media-src 'self' blob:", `connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}`, "object-src 'none'", "base-uri 'none'", "frame-ancestors 'self'", "form-action 'none'",
+    "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data: blob: https://static-cdn.jtvnw.net https://*.klipy.com https://cdn.freesound.org",
+    // Онлайн-мемы Klipy по правилам сервиса загружаются напрямую с его серверов; превью звуков — с Freesound.
+    "media-src 'self' blob: https://*.klipy.com https://cdn.freesound.org", `connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}`, "object-src 'none'", "base-uri 'none'", "frame-ancestors 'self'", "form-action 'none'",
   ].join('; '));
 }
 

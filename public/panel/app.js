@@ -105,7 +105,7 @@
   function probeMedia() {
     if (!S || !ws || ws.readyState !== 1) return;
     S.media.forEach(function (m) {
-      if (probed[m.id] || m.kind === 'image' || (m.duration_ms > 0 && m.status !== 'broken')) return;
+      if (probed[m.id] || m.kind === 'image' || m.source === 'klipy' || (m.duration_ms > 0 && m.status !== 'broken')) return;
       probed[m.id] = true;
       var el = document.createElement(m.kind === 'video' ? 'video' : 'audio');
       el.preload = 'metadata';
@@ -139,6 +139,7 @@
     if (page === 'home') renderHome();
     else if (page === 'rewards') renderRewards();
     else if (page === 'media') renderMedia();
+    else if (page === 'find') renderFind();
     else if (page === 'settings') renderSettings();
     else if (page === 'log') renderLog();
     else if (page === 'help') renderHelp();
@@ -333,8 +334,8 @@
   function mediaOptions(selected, filter) {
     var opts = [h('option', { value: '', text: '— нет —' })];
     S.media.filter(filter || function () { return true; }).forEach(function (m) {
-      var kind = { audio: '🔊', video: '🎬', image: '🖼' }[m.kind] || '';
-      opts.push(h('option', { value: m.id, text: kind + ' ' + m.name + (m.status === 'broken' ? ' (повреждён!)' : ''), selected: m.id === selected }));
+      var kind = m.source === 'klipy' ? '🌐' : ({ audio: '🔊', video: '🎬', image: '🖼' }[m.kind] || '');
+      opts.push(h('option', { value: m.id, text: kind + ' ' + m.name + (m.source === 'klipy' ? ' (онлайн, Klipy)' : '') + (m.status === 'broken' ? ' (повреждён!)' : ''), selected: m.id === selected }));
     });
     return opts;
   }
@@ -399,6 +400,8 @@
     var media = h('select', { onchange: function () { saveReward(r.id, { media_id: media.value || null }); } }, mediaOptions(r.media_id));
     var video = h('select', { onchange: function () { saveReward(r.id, { video_id: video.value || null }).then(function () { renderRewards(); }); } }, mediaOptions(r.video_id, function (m) { return m.kind !== 'audio'; }));
     var hasVisual = !!r.video_id || !!(r.media_id && S.media.some(function (m) { return m.id === r.media_id && m.kind !== 'audio'; }));
+    var onlineMedia = [r.video_id, r.media_id].map(function (id) { return id && S.media.find(function (m) { return m.id === id && m.source === 'klipy'; }); }).filter(Boolean)[0];
+    var fallbackOk = !!(r.media_id && S.media.some(function (m) { return m.id === r.media_id && m.kind === 'audio' && m.source !== 'klipy'; }));
     var effectiveMode = hasVisual ? r.play_mode : 'audio';
     var chroma = h('input', { type: 'checkbox', checked: !!r.chroma_key, onchange: function () { saveReward(r.id, { chroma_key: chroma.checked }); } });
     var chromaField = h('label', { class: 'check', title: 'Для видео на зелёном фоне (green screen): зелёный станет прозрачным' }, chroma, 'Убрать зелёный фон (хромакей)');
@@ -463,6 +466,9 @@
       var m = id && S.media.find(function (x) { return x.id === id; });
       if (m && m.status === 'broken') card.appendChild(h('div', { class: 'warnbox', text: 'Медиафайл «' + m.name + '» повреждён: ' + m.status_msg }));
     });
+    if (onlineMedia) card.appendChild(h('div', { class: fallbackOk ? 'infobox' : 'warnbox', style: 'margin-top:10px', text: fallbackOk
+      ? '🌐 «' + onlineMedia.name + '» показывается онлайн с сервера Klipy. Если Klipy недоступен — сыграет «Звук (основной файл)».'
+      : '🌐 «' + onlineMedia.name + '» показывается онлайн с сервера Klipy. Выберите «Звук (основной файл)» — он сыграет, если Klipy или интернет недоступны; иначе оповещения не будет.' }));
     if (r.bot_enabled && !r.media_id && !r.sound_id && !r.video_id) card.appendChild(h('div', { class: 'warnbox', text: 'Награда включена, но медиафайл не выбран — оповещение не покажется.' }));
     return card;
   }
@@ -500,7 +506,8 @@
           probed = {};
           act(post('/api/media/verify')).then(function (r) { toast('Проверено: ' + r.checked + ', повреждено: ' + r.broken, r.broken ? 'bad' : 'ok'); load(); });
         } }),
-        h('button', { text: 'Открыть папку', onclick: function () { act(post('/api/open-folder', { which: 'media' })); } }))));
+        h('button', { text: 'Открыть папку', onclick: function () { act(post('/api/open-folder', { which: 'media' })); } }),
+        h('a', { class: 'btn primary', href: '#find', text: '🔎 Найти медиа' }))));
     var dz = h('div', { class: 'dropzone', onclick: function () { fileInput.click(); } },
       h('div', { text: 'Перетащите файлы сюда или нажмите для выбора' }),
       h('div', { class: 'small', text: 'MP3, WAV, OGG, M4A, WebM, MP4 (H.264), GIF, PNG, JPG, WebP — до 200 МБ' }));
@@ -514,15 +521,29 @@
     var grid = h('div', { class: 'media-grid' });
     S.media.forEach(function (m) {
       var url = '/media/' + m.id;
-      var prev = m.kind === 'image' ? h('img', { src: url, alt: '' })
-        : m.kind === 'video' ? h('video', { src: url, controls: true, preload: 'metadata' })
-        : h('audio', { src: url, controls: true, preload: 'none' });
+      var prev;
+      if (m.source === 'klipy') {
+        prev = h('div', { class: 'online-ph' }, h('div', { text: '🌐 Онлайн-медиа Klipy' }), h('div', { class: 'small', text: 'файл не хранится на компьютере' }));
+        prev.appendChild(h('button', { class: 'small', text: 'Показать', onclick: function () {
+          act(api('GET', '/api/media/' + m.id + '/online')).then(function (r) {
+            var box = prev.parentNode; clear(box);
+            box.appendChild(r.kind === 'video' ? h('video', { src: r.url, controls: true, autoplay: true }) : h('img', { src: r.url, alt: '' }));
+          });
+        } }));
+      } else {
+        prev = m.kind === 'image' ? h('img', { src: url, alt: '' })
+          : m.kind === 'video' ? h('video', { src: url, controls: true, preload: 'metadata' })
+          : h('audio', { src: url, controls: true, preload: 'none' });
+      }
+      var origin = m.source === 'klipy' ? 'Klipy (онлайн)' : m.source === 'freesound' ? 'Freesound' : m.source === 'url' ? 'по ссылке' : '';
       var st = m.status === 'broken' ? h('span', { class: 'badge bad', text: 'повреждён' }) : m.status === 'warning' ? h('span', { class: 'badge warn', text: 'внимание' }) : h('span', { class: 'badge ok', text: 'OK' });
       grid.appendChild(h('div', { class: 'media-card' },
         h('div', { class: 'media-preview' }, prev),
         h('div', { class: 'media-info' },
           h('div', { class: 'media-name', text: m.name }),
-          h('div', { class: 'row small muted' }, st, { audio: 'звук', video: 'видео', image: 'изображение' }[m.kind], '·', fmtSize(m.size), '·', fmtDur(m.duration_ms)),
+          h('div', { class: 'row small muted' }, st, { audio: 'звук', video: 'видео', image: 'изображение' }[m.kind], '·', m.source === 'klipy' ? 'онлайн' : fmtSize(m.size), '·', fmtDur(m.duration_ms)),
+          origin ? h('div', { class: 'small muted' }, 'Источник: ', m.source_url ? h('a', { href: m.source_url, target: '_blank', rel: 'noopener noreferrer', text: origin }) : origin) : null,
+          m.attribution && m.source === 'freesound' ? h('div', { class: 'small muted', text: m.attribution }) : null,
           m.status_msg ? h('div', { class: 'small', style: 'color:' + (m.status === 'broken' ? '#ff9a9e' : '#ffd38a'), text: m.status_msg }) : null,
           h('div', { class: 'small muted', text: m.usedBy.length ? 'Используется: ' + m.usedBy.join(', ') : 'Не используется' }),
           h('div', { class: 'media-actions' },
@@ -541,6 +562,177 @@
             } })))));
     });
     root.appendChild(grid);
+  }
+
+  // ---------------- Найти медиа ----------------
+  // Состояние поиска хранится отдельно, чтобы результаты не пропадали при обновлении данных панели.
+  var F = {
+    tab: 'klipy', ktype: 'clips', kq: '', kres: null, kpage: 1, knext: false, kloading: false,
+    fq: '', fres: null, fpage: 1, fnext: false, ftotal: 0, fcommercial: true, floading: false, url: '', urlLoading: false, lastUrlRow: null,
+  };
+  var KTYPES = [['clips', '🎬 Клипы со звуком'], ['gifs', 'GIF'], ['stickers', 'Стикеры']];
+
+  function qs(o) {
+    return Object.keys(o).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(o[k]); }).join('&');
+  }
+
+  /** Создание награды в Twitch с этим файлом (с подтверждением) и включение её в боте. */
+  function createRewardWith(row) {
+    if (S.status.auth.status !== 'ok') { toast('Сначала войдите в Twitch («Настройки» → «Войти через Twitch»)', 'bad'); return; }
+    var t = prompt('Название новой награды (до 45 символов):', (row.name || '').replace(/\.[a-z0-9]+$/i, '').slice(0, 45));
+    if (!t) return;
+    var c = Number(prompt('Стоимость в баллах:', '1000'));
+    if (!c) return;
+    var cd = Number(prompt('Перезарядка в секундах (0 — без перезарядки):', '60') || 0);
+    if (!confirm('Создать в Twitch награду «' + t + '» за ' + c + ' баллов? Она сразу станет видна зрителям.')) return;
+    act(post('/api/rewards/create', { confirm: true, title: t, cost: c, cooldownSec: cd })).then(function (r) {
+      var cfg = row.kind === 'audio' ? { media_id: row.id, play_mode: 'audio', bot_enabled: true } : { video_id: row.id, play_mode: 'video', bot_enabled: true };
+      return post('/api/rewards/' + encodeURIComponent(r.id), cfg).then(function () {
+        toast('Награда «' + r.title + '» создана и включена' + (row.source === 'klipy' ? '. Совет: в «Наградах» выберите ей «Звук (основной файл)» — он сыграет, если Klipy будет недоступен.' : ''), 'ok');
+        load();
+      });
+    }).catch(function () { /* ошибка уже показана */ });
+  }
+
+  function addedActions(row) {
+    return h('div', { class: 'row small' }, h('span', { class: 'badge ok', text: 'в медиатеке' }),
+      h('button', { class: 'small', text: '▶ В OBS', onclick: function () { act(post('/api/media/' + row.id + '/test'), 'Отправлено в overlay'); } }),
+      h('button', { class: 'small primary', text: '＋ Награда', title: 'Создать награду в Twitch с этим файлом', onclick: function () { createRewardWith(row); } }));
+  }
+
+  function needKey(name, how) {
+    return h('div', { class: 'card' }, h('h2', { text: 'Нужен ключ ' + name }),
+      h('p', null, how),
+      h('p', null, 'Затем вставьте его в ', h('a', { href: '#settings', text: '«Настройки» → «Поиск медиа»' }), '. Ключ бесплатный; бот хранит его только на этом компьютере.'));
+  }
+
+  function renderFind() {
+    var root = clear($('page-find'));
+    root.appendChild(h('h1', { text: 'Найти медиа' }));
+    var tab = function (id, text) { return h('button', { class: F.tab === id ? 'active' : '', text: text, onclick: function () { F.tab = id; renderFind(); } }); };
+    root.appendChild(h('div', { class: 'tabs' }, tab('klipy', 'Klipy — мемы и клипы'), tab('freesound', 'Freesound — звуки'), tab('url', 'По ссылке')));
+    if (F.tab === 'klipy') renderKlipy(root);
+    else if (F.tab === 'freesound') renderFreesound(root);
+    else renderUrlImport(root);
+  }
+
+  function renderKlipy(root) {
+    if (!S.find || !S.find.klipy) {
+      root.appendChild(needKey('Klipy', h('span', null, 'Зарегистрируйтесь на ', h('a', { href: 'https://partner.klipy.com', target: '_blank', rel: 'noopener noreferrer', text: 'partner.klipy.com' }), ', откройте «API Keys» и создайте ключ.')));
+      return;
+    }
+    root.appendChild(h('div', { class: 'infobox', style: 'margin-bottom:12px' },
+      'Мемы Klipy не скачиваются на компьютер — так требуют правила Klipy. Они показываются на стриме прямо с сервера Klipy, поэтому нужен интернет. ',
+      h('b', { text: 'Если Klipy будет недоступен, сыграет запасной звук награды' }), ' («Звук (основной файл)» в карточке награды).'));
+    var input = h('input', { type: 'search', placeholder: 'Search KLIPY', value: F.kq, oninput: function () { F.kq = input.value; } });
+    var search = function (page) {
+      F.kloading = true; F.kpage = page; renderFind();
+      api('GET', '/api/find/klipy?' + qs({ type: F.ktype, q: F.kq, page: page })).then(function (r) {
+        F.kres = page > 1 && F.kres ? F.kres.concat(r.results) : r.results; F.knext = r.hasNext;
+      }, function (e) { toast(e.message, 'bad'); }).then(function () { F.kloading = false; renderFind(); });
+    };
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') search(1); });
+    var types = h('div', { class: 'tabs', style: 'margin:0' }, KTYPES.map(function (t) {
+      return h('button', { class: 'small' + (F.ktype === t[0] ? ' active' : ''), text: t[1], onclick: function () { F.ktype = t[0]; F.kres = null; search(1); } });
+    }));
+    root.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'find-bar' }, input, h('button', { class: 'primary', text: F.kloading ? 'Поиск…' : 'Найти', disabled: F.kloading, onclick: function () { search(1); } })),
+      h('div', { style: 'margin-top:10px' }, types),
+      h('div', { class: 'small muted', style: 'margin-top:8px', text: 'Пустой запрос — популярное сейчас. Тестовый ключ Klipy: 100 запросов в час (каждый поиск и каждый показ мема на стриме).' })));
+    if (F.kres === null) return;
+    if (!F.kres.length) { root.appendChild(h('div', { class: 'card' }, h('div', { class: 'empty', text: 'Ничего не найдено. Попробуйте другое слово (лучше на английском).' }))); return; }
+    var grid = h('div', { class: 'find-grid' });
+    F.kres.forEach(function (it) {
+      var prev = h('div', { class: 'media-preview', title: it.play.kind === 'video' ? 'Нажмите, чтобы посмотреть со звуком' : '' },
+        h('img', { src: it.thumb, alt: '', loading: 'lazy' }), it.play.kind === 'video' ? h('span', { class: 'play-hint', text: '▶ со звуком' }) : null);
+      if (it.play.kind === 'video') prev.addEventListener('click', function () {
+        if (prev.querySelector('video')) return;
+        clear(prev).appendChild(h('video', { src: it.play.url, controls: true, autoplay: true, playsinline: true }));
+      });
+      var actions = h('div', { class: 'media-actions' });
+      var existing = S.media.find(function (m) { return m.source === 'klipy' && m.remote_ref === it.type + '/' + it.slug; });
+      if (existing) actions.appendChild(addedActions(existing));
+      else actions.appendChild(h('button', { class: 'small primary', text: '＋ В медиатеку', onclick: function (ev) {
+        var btn = ev.currentTarget; btn.disabled = true;
+        act(post('/api/find/klipy/add', { type: it.type, slug: it.slug }), 'Добавлено в медиатеку (онлайн)').then(function (row) {
+          S.media.unshift(Object.assign({ usedBy: [] }, row)); clear(actions).appendChild(addedActions(row));
+        }, function () { btn.disabled = false; });
+      } }));
+      grid.appendChild(h('div', { class: 'media-card' }, prev,
+        h('div', { class: 'media-info' }, h('div', { class: 'media-name', text: it.title }),
+          h('div', { class: 'small muted' }, it.play.kind === 'video' ? 'видео со звуком' : 'анимация без звука', it.play.width ? ' · ' + it.play.width + '×' + it.play.height : ''),
+          actions)));
+    });
+    root.appendChild(grid);
+    if (F.knext) root.appendChild(h('div', { class: 'row', style: 'margin-top:12px;justify-content:center' }, h('button', { text: F.kloading ? 'Загрузка…' : 'Показать ещё', disabled: F.kloading, onclick: function () { search(F.kpage + 1); } })));
+    root.appendChild(h('div', { class: 'powered', text: 'Powered by KLIPY' }));
+  }
+
+  function renderFreesound(root) {
+    if (!S.find || !S.find.freesound) {
+      root.appendChild(needKey('Freesound', h('span', null, 'Зарегистрируйтесь на ', h('a', { href: 'https://freesound.org', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org' }), ', затем откройте ', h('a', { href: 'https://freesound.org/apiv2/apply', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org/apiv2/apply' }), ' и создайте ключ. Нужна строка «Client secret / Api key».')));
+      return;
+    }
+    root.appendChild(h('div', { class: 'infobox', style: 'margin-bottom:12px' },
+      'Звуки Freesound скачиваются в медиатеку (MP3) и играют без интернета. Автор и лицензия сохраняются у файла. ',
+      'Лицензия CC BY требует указывать автора — например, в описании канала или панели под стримом.'));
+    var input = h('input', { type: 'search', placeholder: 'Например: applause, fail, laugh, bruh', value: F.fq, oninput: function () { F.fq = input.value; } });
+    var search = function (page) {
+      if (!F.fq.trim()) { toast('Введите, что искать', 'bad'); return; }
+      F.floading = true; F.fpage = page; renderFind();
+      api('GET', '/api/find/freesound?' + qs({ q: F.fq, page: page, commercial: F.fcommercial ? 1 : 0 })).then(function (r) {
+        F.fres = page > 1 && F.fres ? F.fres.concat(r.results) : r.results; F.fnext = r.hasNext; F.ftotal = r.total;
+      }, function (e) { toast(e.message, 'bad'); }).then(function () { F.floading = false; renderFind(); });
+    };
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') search(1); });
+    var commercial = h('input', { type: 'checkbox', checked: F.fcommercial, onchange: function () { F.fcommercial = commercial.checked; } });
+    root.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'find-bar' }, input, h('button', { class: 'primary', text: F.floading ? 'Поиск…' : 'Найти', disabled: F.floading, onclick: function () { search(1); } })),
+      h('label', { class: 'check', style: 'margin:10px 0 0' }, commercial, 'Только звуки, которые можно использовать на стриме с монетизацией (CC0 и CC BY)'),
+      h('div', { class: 'small muted', text: 'Показываются звуки до 60 секунд. Лучше искать на английском.' })));
+    if (F.fres === null) return;
+    if (!F.fres.length) { root.appendChild(h('div', { class: 'card' }, h('div', { class: 'empty', text: 'Ничего не найдено.' }))); return; }
+    var list = h('div', { class: 'list' });
+    F.fres.forEach(function (it) {
+      var actions = h('div', { class: 'row' });
+      var existing = S.media.find(function (m) { return m.source === 'freesound' && m.source_url === it.pageUrl; });
+      if (existing) actions.appendChild(addedActions(existing));
+      else actions.appendChild(h('button', { class: 'small primary', text: '＋ В медиатеку', onclick: function (ev) {
+        var btn = ev.currentTarget; btn.disabled = true; btn.textContent = 'Скачивание…';
+        act(post('/api/find/freesound/add', { id: it.id }), 'Звук скачан в медиатеку').then(function (row) {
+          S.media.unshift(Object.assign({ usedBy: [] }, row)); clear(actions).appendChild(addedActions(row));
+        }, function () { btn.disabled = false; btn.textContent = '＋ В медиатеку'; });
+      } }));
+      list.appendChild(h('div', { class: 'sound-row' },
+        h('div', null,
+          h('div', { class: 'media-name', text: it.name }),
+          h('div', { class: 'small muted' }, 'Автор: ', it.username, ' · ', fmtDur(it.durationSec * 1000), ' · ',
+            h('a', { href: it.pageUrl, target: '_blank', rel: 'noopener noreferrer', text: 'страница звука' })),
+          h('span', { class: 'badge ' + (it.commercialOk ? 'ok' : 'warn'), text: it.licenseLabel })),
+        h('audio', { src: it.previewUrl, controls: true, preload: 'none' }),
+        actions));
+    });
+    root.appendChild(h('div', { class: 'card', style: 'margin-top:12px' }, h('div', { class: 'small muted', style: 'margin-bottom:8px', text: 'Найдено: ' + F.ftotal }), list,
+      F.fnext ? h('div', { class: 'row', style: 'margin-top:12px;justify-content:center' }, h('button', { text: F.floading ? 'Загрузка…' : 'Показать ещё', disabled: F.floading, onclick: function () { search(F.fpage + 1); } })) : null,
+      h('div', { class: 'powered', text: 'Звуки: Freesound.org' })));
+  }
+
+  function renderUrlImport(root) {
+    var input = h('input', { type: 'url', placeholder: 'https://example.com/sound.mp3', value: F.url, oninput: function () { F.url = input.value; } });
+    var go = function () {
+      if (!F.url.trim()) { toast('Вставьте ссылку на файл', 'bad'); return; }
+      F.urlLoading = true; renderFind();
+      act(post('/api/find/url', { url: F.url.trim() }), 'Файл скачан в медиатеку').then(function (row) {
+        F.url = ''; F.lastUrlRow = row; S.media.unshift(Object.assign({ usedBy: [] }, row));
+      }, function () { /* ошибка уже показана */ }).then(function () { F.urlLoading = false; renderFind(); });
+    };
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+    root.appendChild(h('div', { class: 'card' },
+      h('h2', { text: 'Скачать файл по прямой ссылке' }),
+      h('div', { class: 'find-bar' }, input, h('button', { class: 'primary', text: F.urlLoading ? 'Скачивание…' : 'Скачать', disabled: F.urlLoading, onclick: go })),
+      h('p', { class: 'small muted' }, 'Нужна прямая ссылка на сам файл: MP3, WAV, OGG, M4A, MP4 (H.264), WebM, GIF, PNG, JPG или WebP, до 200 МБ. ',
+        'Ссылки на страницы YouTube, TikTok и т. п. не подойдут. Используйте только файлы, которые вам разрешено показывать на стриме.'),
+      F.lastUrlRow ? h('div', { class: 'row', style: 'margin-top:8px' }, h('span', { text: 'Добавлено: ' + F.lastUrlRow.name }), addedActions(F.lastUrlRow)) : null));
   }
 
   // ---------------- Настройки ----------------
@@ -571,6 +763,7 @@
     var p = {}; p[key] = value;
     return act(post('/api/settings', p)).then(function (r) {
       S.settings = r.settings;
+      if (r.find) S.find = r.find;
       toast(r.note || 'Сохранено', 'ok');
       renderSide();
     }, function () { load(); });
@@ -640,6 +833,27 @@
         settingField('Восстанавливать пропущенные события после обрыва связи', 'recoverMissed', { type: 'check', hint: 'Работает только для наград, созданных этим ботом (ограничение Twitch).' }),
         settingField('Отмечать выполненными и возвращать баллы при сбое', 'manageRedemptionStatus', { type: 'check', hint: 'Только для наград, созданных ботом и не пропускающих очередь запросов.' }),
         settingField('Хранить историю, дней', 'historyRetentionDays', { type: 'number', min: 1 }))));
+
+    var keyField = function (label, key, hint) {
+      var inp = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: S.settings[key] ? 'сохранён (' + S.settings[key] + ') — вставьте новый, чтобы заменить' : 'вставьте ключ' });
+      inp.addEventListener('change', function () { if (inp.value.trim()) saveSetting(key, inp.value.trim()).then(load); });
+      return h('div', { class: 'field' }, h('label', { text: label }),
+        h('div', { class: 'copy-field' }, inp, S.settings[key] ? h('button', { class: 'danger', text: 'Удалить', onclick: function () {
+          if (confirm('Удалить ключ «' + label + '»? Поиск в этом сервисе перестанет работать.')) saveSetting(key, '').then(load);
+        } }) : null),
+        h('span', { class: 'hint' }, hint));
+    };
+    root.appendChild(h('div', { class: 'grid cols-2' },
+      h('div', { class: 'card' }, h('h2', { text: 'Поиск медиа' }),
+        keyField('Ключ Klipy (мемы, клипы, GIF)', 'klipyApiKey', h('span', null, 'Бесплатно: ', h('a', { href: 'https://partner.klipy.com', target: '_blank', rel: 'noopener noreferrer', text: 'partner.klipy.com' }), ' → API Keys.')),
+        keyField('Ключ Freesound (звуки)', 'freesoundApiKey', h('span', null, 'Бесплатно: ', h('a', { href: 'https://freesound.org/apiv2/apply', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org/apiv2/apply' }), ' → строка «Client secret / Api key».')),
+        settingField('Фильтр контента Klipy', 'klipyContentFilter', { type: 'select', options: [['high', 'Строгий'], ['medium', 'Средний (рекомендуется для Twitch)'], ['low', 'Мягкий'], ['off', 'Выключен']] }),
+        h('p', { class: 'small muted', text: 'Ключи хранятся только на этом компьютере, в журнал не записываются и в панели показываются не полностью.' })),
+      h('div', { class: 'card' }, h('h2', { text: 'Как это работает' }),
+        h('ul', { class: 'small' },
+          h('li', { text: 'Klipy: мемы не скачиваются (правила Klipy) — во время стрима OBS загружает их с сервера Klipy. Назначьте награде запасной звук на случай сбоя.' }),
+          h('li', { text: 'Freesound: звуки скачиваются в медиатеку и работают без интернета. Автор и лицензия сохраняются.' }),
+          h('li', { text: 'По ссылке: прямой адрес файла скачивается в медиатеку. Ссылки на этот компьютер и локальную сеть запрещены.' })))));
 
     var autostart = h('input', { type: 'checkbox', checked: !!S.autostart, onchange: function () {
       act(post('/api/autostart', { enabled: autostart.checked }), autostart.checked ? 'Автозапуск включён' : 'Автозапуск выключен').then(null, function () { autostart.checked = !autostart.checked; });
@@ -727,13 +941,21 @@
       h('div', { class: 'infobox', style: 'margin-top:8px' },
         h('p', { style: 'margin:0 0 6px' }, h('b', { text: 'Награда создана на сайте Twitch, а не в боте? ' }), 'Нажмите «Обновить из Twitch» — бот увидит её и сможет проигрывать. Но менять её из панели и возвращать зрителям баллы при сбое он не сможет: для этого нажмите у неё «Создать свою копию в Twitch…», удалите оригинал на сайте Twitch, затем у копии — «Переименовать…» и «Снять с паузы в Twitch».'),
         h('p', { style: 'margin:0' }, h('b', { text: 'Временно убрать видео у всех наград ' }), '(например, на игровой сцене): «Главная» → карточка «Видео» → «Только звук для всех».'))));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: '4. Переход с Sound Alerts (или другого сервиса)' }),
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: '4. Мемы и звуки из интернета («Найти медиа»)' }),
+      h('ol', null,
+        h('li', null, h('b', { text: 'Ключи (один раз). ' }), 'Klipy — ', h('a', { href: 'https://partner.klipy.com', target: '_blank', rel: 'noopener noreferrer', text: 'partner.klipy.com' }), ' → API Keys; Freesound — ',
+          h('a', { href: 'https://freesound.org/apiv2/apply', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org/apiv2/apply' }), '. Вставьте их в «Настройки» → «Поиск медиа».'),
+        h('li', null, h('b', { text: 'Найдите. ' }), '«Найти медиа» → Klipy (клипы со звуком, GIF, стикеры) или Freesound (звуки). Лучше искать по-английски.'),
+        h('li', null, h('b', { text: 'Добавьте. ' }), '«＋ В медиатеку», затем «▶ В OBS» для проверки или «＋ Награда» — бот создаст награду в Twitch с этим файлом.'),
+        h('li', null, h('b', { text: 'Запасной звук. ' }), 'Мемы Klipy не скачиваются (правила Klipy) — они загружаются с сервера Klipy во время показа. Выберите награде «Звук (основной файл)»: он сыграет, если Klipy или интернет недоступны.')),
+      h('p', { class: 'small muted', style: 'margin:0', text: 'Звуки Freesound скачиваются и работают без интернета; автора звуков с лицензией CC BY нужно указывать (например, в описании канала) — он записан у файла в «Медиа».' })));
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: '5. Переход с Sound Alerts (или другого сервиса)' }),
       h('ol', null,
         h('li', { text: 'Загрузите звуки/видео в раздел «Медиа» и назначьте их наградам.' }),
         h('li', { text: 'Включите «Режим наблюдения» и проверьте во время стрима, что все активации видны в журнале.' }),
         h('li', { text: 'Скройте (значок глаза) источники Sound Alerts во всех сценах OBS, включите нужные награды в боте и «Активный режим».' }),
         h('li', { text: 'По желанию — создайте собственные копии наград (кнопка у награды). Старые награды Sound Alerts удаляйте только после успешной проверки.' }))));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: '5. Переход с TriggerFyre' }),
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: '6. Переход с TriggerFyre' }),
       h('p', { class: 'muted', style: 'margin-top:0' }, 'Полная инструкция с таблицей настроек: ',
         h('a', { href: 'https://github.com/darkspiteman/twitch-points-alert-bot/blob/main/docs/MIGRATION-TRIGGERFYRE.md', target: '_blank', rel: 'noopener noreferrer', text: 'docs/MIGRATION-TRIGGERFYRE.md на GitHub' }),
         ' (этот же файл есть в папке программы: docs\\MIGRATION-TRIGGERFYRE.md).'),

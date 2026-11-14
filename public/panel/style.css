@@ -130,6 +130,18 @@ tr:last-child td { border-bottom: none; }
 .media-name { font-weight: 600; overflow-wrap: anywhere; }
 .media-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; padding-top: 6px; }
 
+.find-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 12px; }
+.find-grid .media-preview { height: 140px; cursor: pointer; position: relative; }
+.find-grid .media-preview img, .find-grid .media-preview video { max-height: 140px; }
+.find-grid .play-hint { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 6px; }
+.find-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.find-bar input[type=search], .find-bar input[type=url] { flex: 1; min-width: 220px; }
+.powered { color: var(--muted); font-size: 12px; text-align: right; margin-top: 10px; }
+.sound-row { display: grid; grid-template-columns: minmax(0, 1fr) 260px auto; gap: 10px; align-items: center; padding: 10px; background: var(--bg2); border-radius: 8px; }
+.sound-row audio { width: 100%; }
+@media (max-width: 900px) { .sound-row { grid-template-columns: 1fr; } }
+.online-ph { color: var(--muted); text-align: center; font-size: 13px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+
 .dropzone {
   border: 2px dashed var(--line); border-radius: var(--radius); padding: 22px; text-align: center; color: var(--muted);
   margin-bottom: 14px; cursor: pointer; transition: border-color .15s, background .15s;

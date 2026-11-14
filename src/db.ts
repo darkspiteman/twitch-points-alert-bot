@@ -40,6 +40,14 @@ export interface MediaRow {
   status: 'ok' | 'warning' | 'broken';
   status_msg: string;
   created_at: number;
+  /** Откуда файл: 'upload' (загружен), 'url' (по ссылке), 'freesound', 'klipy' (онлайн, без копии на диске). */
+  source: 'upload' | 'url' | 'freesound' | 'klipy';
+  /** Для онлайн-медиа: «тип/slug» в Klipy (например, «clips/they-love-me»). */
+  remote_ref: string;
+  /** Автор и лицензия (Freesound) или источник. */
+  attribution: string;
+  /** Страница источника (для подписи/проверки лицензии). */
+  source_url: string;
 }
 
 export interface RedemptionRow {
@@ -100,7 +108,12 @@ export class Db {
     if (!cols.includes('video_id')) this.raw.exec('ALTER TABLE rewards ADD COLUMN video_id TEXT');
     if (!cols.includes('chroma_key')) this.raw.exec('ALTER TABLE rewards ADD COLUMN chroma_key INTEGER NOT NULL DEFAULT 0');
     if (!cols.includes('play_mode')) this.raw.exec("ALTER TABLE rewards ADD COLUMN play_mode TEXT NOT NULL DEFAULT 'video'");
-    this.setMeta('schema_version', '2');
+    const mcols = (this.raw.prepare('PRAGMA table_info(media)').all() as { name: string }[]).map((c) => c.name);
+    if (!mcols.includes('source')) this.raw.exec("ALTER TABLE media ADD COLUMN source TEXT NOT NULL DEFAULT 'upload'");
+    if (!mcols.includes('remote_ref')) this.raw.exec("ALTER TABLE media ADD COLUMN remote_ref TEXT NOT NULL DEFAULT ''");
+    if (!mcols.includes('attribution')) this.raw.exec("ALTER TABLE media ADD COLUMN attribution TEXT NOT NULL DEFAULT ''");
+    if (!mcols.includes('source_url')) this.raw.exec("ALTER TABLE media ADD COLUMN source_url TEXT NOT NULL DEFAULT ''");
+    this.setMeta('schema_version', '3');
   }
 
   close(): void {
@@ -177,8 +190,8 @@ export class Db {
   listMedia(): MediaRow[] { return this.raw.prepare('SELECT * FROM media ORDER BY created_at DESC').all() as unknown as MediaRow[]; }
   getMedia(id: string): MediaRow | undefined { return this.raw.prepare('SELECT * FROM media WHERE id = ?').get(id) as unknown as MediaRow | undefined; }
   insertMedia(m: MediaRow): void {
-    this.raw.prepare(`INSERT INTO media(id, name, file_name, kind, mime, size, duration_ms, status, status_msg, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(m.id, m.name, m.file_name, m.kind, m.mime, m.size, m.duration_ms, m.status, m.status_msg, m.created_at);
+    this.raw.prepare(`INSERT INTO media(id, name, file_name, kind, mime, size, duration_ms, status, status_msg, created_at, source, remote_ref, attribution, source_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(m.id, m.name, m.file_name, m.kind, m.mime, m.size, m.duration_ms, m.status, m.status_msg, m.created_at, m.source ?? 'upload', m.remote_ref ?? '', m.attribution ?? '', m.source_url ?? '');
   }
   updateMediaStatus(id: string, status: MediaRow['status'], msg: string, durationMs?: number): void {
     if (durationMs !== undefined) this.raw.prepare('UPDATE media SET status = ?, status_msg = ?, duration_ms = ? WHERE id = ?').run(status, msg, Math.round(durationMs), id);

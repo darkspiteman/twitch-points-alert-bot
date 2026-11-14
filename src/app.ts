@@ -13,6 +13,8 @@ import { MediaLibrary } from './media.ts';
 import { RedemptionRouter, REDEMPTION_TYPE, REDEMPTION_VERSION } from './router.ts';
 import { Hub } from './server/hub.ts';
 import { Backoff } from './backoff.ts';
+import { MediaFinder } from './find.ts';
+import type { Transport } from './net/safe-download.ts';
 
 export interface AppOptions {
   paths: Paths;
@@ -25,6 +27,10 @@ export interface AppOptions {
   eventsubUrl?: string;
   eventsubKeepaliveSec?: number;
   eventsubBackoff?: Backoff;
+  /** Подмена транспорта скачивания (тесты). */
+  downloadTransport?: Transport;
+  klipyBase?: string;
+  freesoundBase?: string;
 }
 
 /**
@@ -42,6 +48,7 @@ export class App extends EventEmitter {
   readonly media: MediaLibrary;
   readonly router: RedemptionRouter;
   readonly hub: Hub;
+  readonly finder: MediaFinder;
   readonly startedAt = Date.now();
   port: number;
   private cleanupTimer: NodeJS.Timeout | null = null;
@@ -71,7 +78,11 @@ export class App extends EventEmitter {
       return { position: s.overlayPosition, maxWidthPct: s.overlayMaxWidthPct, maxHeightPct: s.overlayMaxHeightPct, masterVolume: s.masterVolume, maxDurationMs: s.maxDurationMs };
     }, () => [`http://127.0.0.1:${this.port}`, `http://localhost:${this.port}`]);
 
-    this.queue = new PlaybackQueue(this.hub, () => this.db.getSettings(), opts.logger.child('queue'));
+    this.finder = new MediaFinder({
+      db: this.db, media: this.media, log: opts.logger.child('find'), journal: (l, t, m) => this.journal(l, t, m),
+      fetchFn: opts.fetchFn, transport: opts.downloadTransport, klipyBase: opts.klipyBase, freesoundBase: opts.freesoundBase,
+    });
+    this.queue = new PlaybackQueue(this.hub, () => this.db.getSettings(), opts.logger.child('queue'), (item) => this.finder.prepare(item));
     this.router = new RedemptionRouter({
       db: this.db, media: this.media, queue: this.queue, log: opts.logger.child('router'),
       helix: () => (this.auth.state.status === 'ok' ? this.helix : null),
@@ -91,6 +102,11 @@ export class App extends EventEmitter {
     this.hub.onOverlayResult = (oid, itemId, result, msg) => this.queue.report(oid, itemId, result, msg);
     this.hub.onOverlayConnected = () => { this.queue.overlayConnected(); this.pushStatus(); };
     this.hub.onOverlayDisconnected = (id) => { this.queue.overlayDisconnected(id); this.pushStatus(); };
+    this.hub.onOverlayFallback = (itemId, message) => {
+      const cur = this.queue.snapshot().current;
+      const title = cur && cur.id === itemId ? cur.rewardTitle : 'оповещение';
+      this.journal('warn', 'online', `«${title}»: онлайн-медиа не загрузилось в OBS (${message || 'ошибка'}) — сыграл запасной звук`);
+    };
     this.hub.onMediaProbe = (mediaId, ok, durationMs, message) => {
       const m = this.db.getMedia(mediaId);
       if (!m) return;

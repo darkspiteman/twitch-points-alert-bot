@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Db, RewardRow, MediaRow } from './db.ts';
-import type { MediaLibrary } from './media.ts';
+import { isRemote, type MediaLibrary } from './media.ts';
 import type { PlaybackQueue, PlayItem, MediaRef, ItemResult } from './queue.ts';
 import type { EventSubMessage } from './twitch/eventsub.ts';
 import type { HelixClient } from './twitch/helix.ts';
@@ -180,6 +180,7 @@ export class RedemptionRouter extends EventEmitter {
 
   private ref(m: MediaRow | undefined): MediaRef | null {
     if (!m || !this.d.media.exists(m) || m.status === 'broken') return null;
+    if (isRemote(m)) return { id: m.id, url: '', kind: m.kind, mime: m.mime, remote: m.remote_ref };
     return { id: m.id, url: `/media/${m.id}`, kind: m.kind, mime: m.mime };
   }
 
@@ -216,6 +217,11 @@ export class RedemptionRouter extends EventEmitter {
       audio = (main.ref?.kind === 'audio' ? main.ref : null) ?? extra.ref ?? asAudio(main.ref) ?? asAudio(video.ref);
     }
     if (!visual && !audio) return { error: main.err ?? video.err ?? extra.err ?? 'Нет подходящего файла для выбранного режима' };
+    // Онлайн-медиа может не загрузиться (нет интернета, сбой сервиса) — тогда сыграет локальный звук награды.
+    const localAudio = (r: MediaRef | null) => (r && !r.remote && r.kind === 'audio' ? r : null);
+    const fallbackAudio = visual?.remote || audio?.remote
+      ? localAudio(main.ref) ?? (audio === extra.ref ? null : localAudio(extra.ref)) ?? null
+      : null;
     const showCaption = s.showCaption && reward.show_caption === 1;
     const caption = showCaption
       ? s.captionTemplate.replaceAll('{user}', ctx.userName).replaceAll('{reward}', reward.title).replaceAll('{input}', ctx.userInput).replaceAll('{cost}', String(reward.cost)).trim()
@@ -224,7 +230,8 @@ export class RedemptionRouter extends EventEmitter {
       item: {
         id: ctx.id, redemptionId: ctx.source === 'test' ? null : ctx.id, rewardId: reward.id, rewardTitle: reward.title, userName: ctx.userName,
         userInput: ctx.userInput, visual, audio, volume: Math.max(0, Math.min(100, reward.volume)) / 100, durationMs: reward.duration_ms,
-        delayMs: reward.delay_ms, caption: caption || null, chromaKey: reward.chroma_key === 1 && visual?.kind === 'video', source: ctx.source, createdAt: Date.now(),
+        delayMs: reward.delay_ms, caption: caption || null, chromaKey: reward.chroma_key === 1 && visual?.kind === 'video' && !visual.remote,
+        fallbackAudio, source: ctx.source, createdAt: Date.now(),
       },
     };
   }
@@ -234,7 +241,7 @@ export class RedemptionRouter extends EventEmitter {
     if (result === 'failed') {
       this.d.journal('error', 'playback', `«${item.rewardTitle}»: ${message}`);
       const m = item.visual ?? item.audio;
-      if (m && /декод|decode|не поддерж|MEDIA_ERR|повреж/i.test(message)) this.d.db.updateMediaStatus(m.id, 'broken', message);
+      if (m && !m.remote && /декод|decode|не поддерж|MEDIA_ERR|повреж/i.test(message)) this.d.db.updateMediaStatus(m.id, 'broken', message);
     }
     if (!item.redemptionId) return;
     const status = result === 'done' ? 'done' : result;
