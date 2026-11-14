@@ -1,0 +1,25 @@
+{
+  "name": "twitch-alert-bot",
+  "version": "1.0.0",
+  "description": "Локальный бот оповещений о наградах за баллы канала Twitch для OBS (замена Sound Alerts)",
+  "private": true,
+  "type": "module",
+  "main": "src/main.ts",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test",
+    "build:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File launcher/build-launcher.ps1",
+    "install-app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1"
+  },
+  "dependencies": {
+    "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "typescript": "^5.9.3"
+  }
+}

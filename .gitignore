@@ -1,0 +1,10 @@
+node_modules/
+runtime/
+data/
+backup/
+launcher/bin/
+*.log
+.env
+*.dpapi
+TwitchAlertBot.exe
+launcher/app.ico
