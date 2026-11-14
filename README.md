@@ -82,7 +82,8 @@
 
 ## Переход с Sound Alerts
 
-Если сейчас награды обслуживает Sound Alerts (или похожий сервис) — подробный план в [docs/MIGRATION.md](docs/MIGRATION.md). Коротко:
+Если сейчас награды обслуживает Sound Alerts (или похожий сервис) — подробный план в [docs/MIGRATION.md](docs/MIGRATION.md).
+Если вы пользуетесь **TriggerFyre** — отдельная инструкция: [docs/MIGRATION-TRIGGERFYRE.md](docs/MIGRATION-TRIGGERFYRE.md). Коротко:
 
 1. Настройте медиа для наград в боте, Sound Alerts пока не трогайте.
 2. Включите **«Режим наблюдения»** (Главная → Режим). Бот записывает активации в журнал, но не играет их.
