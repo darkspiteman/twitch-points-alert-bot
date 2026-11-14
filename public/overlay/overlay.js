@@ -9,6 +9,8 @@
   var ua = navigator.userAgent || '';
   var app = /\bSLD\b|Streamlabs/i.test(ua) ? 'streamlabs' : (typeof window.obsstudio !== 'undefined' || /\bOBS\//i.test(ua)) ? 'obs' : null;
   var isObs = app !== null; // открыт в программе для стрима, а не в обычном браузере
+  // via=file — страницу открыл файл-загрузчик overlay.html («Локальный файл» в источнике), а не адрес.
+  var via = params.get('via') === 'file' ? 'file' : 'url';
   var showStatus = params.get('debug') === '1' || !isObs;
   var stage = document.getElementById('stage');
   var statusEl = document.getElementById('status');
@@ -50,7 +52,7 @@
     ws.onopen = function () {
       retryDelay = 1000;
       lastMessageAt = Date.now();
-      send({ type: 'hello', isObs: isObs, app: app });
+      send({ type: 'hello', isObs: isObs, app: app, via: via });
       setStatus('Подключено к боту', 'ok');
     };
     ws.onmessage = function (ev) {

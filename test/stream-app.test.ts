@@ -98,10 +98,10 @@ test('overlay.js: в Streamlabs и OBS сообщает программу, в �
   const oldSl = overlayHello(UA_CHROME, true); // Streamlabs без метки в User-Agent: виден только window.obsstudio
   const browser = overlayHello(UA_CHROME, false);
   await delay(0);
-  assert.deepEqual(sl.hello, { type: 'hello', isObs: true, app: 'streamlabs' });
-  assert.deepEqual(obs.hello, { type: 'hello', isObs: true, app: 'obs' });
-  assert.deepEqual(oldSl.hello, { type: 'hello', isObs: true, app: 'obs' });
-  assert.deepEqual(browser.hello, { type: 'hello', isObs: false, app: null });
+  assert.deepEqual(sl.hello, { type: 'hello', isObs: true, app: 'streamlabs', via: 'url' });
+  assert.deepEqual(obs.hello, { type: 'hello', isObs: true, app: 'obs', via: 'url' });
+  assert.deepEqual(oldSl.hello, { type: 'hello', isObs: true, app: 'obs', via: 'url' });
+  assert.deepEqual(browser.hello, { type: 'hello', isObs: false, app: null, via: 'url' });
   assert.equal(sl.statusShown, false, 'в Streamlabs строка состояния не видна зрителям');
   assert.equal(browser.statusShown, true, 'в браузере видна строка состояния с кнопкой «Включить звук»');
 });

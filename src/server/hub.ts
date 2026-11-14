@@ -5,12 +5,16 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { OverlayTransport, PlayItem } from '../queue.ts';
 import type { ScopedLogger } from '../logger.ts';
 import { type StreamApp, STREAM_APPS, detectStreamAppFromUA, isStreamApp } from '../stream-app.ts';
+import { PROBE_ORIGINS } from '../overlay-loader.ts';
 
 /** app — программа для стрима (OBS Studio / Streamlabs Desktop); null — обычный браузер (предпросмотр). */
-interface OverlayClient { id: string; ws: WebSocket; app: StreamApp | null; connectedAt: number; alive: boolean; ua: string }
+interface OverlayClient { id: string; ws: WebSocket; app: StreamApp | null; viaFile: boolean; connectedAt: number; alive: boolean; ua: string }
 
-/** isObs — overlay открыт в программе для стрима (OBS или Streamlabs), а не в браузере. Имя поля сохранено для совместимости. */
-export interface OverlayInfo { id: string; isObs: boolean; app: StreamApp | null; connectedAt: number }
+/**
+ * isObs — overlay открыт в программе для стрима (OBS или Streamlabs), а не в браузере. Имя поля сохранено для совместимости.
+ * viaFile — источник открыт через файл-загрузчик (overlay.html), а не по адресу: тогда ему не страшен запуск программы раньше бота.
+ */
+export interface OverlayInfo { id: string; isObs: boolean; app: StreamApp | null; viaFile: boolean; connectedAt: number }
 
 export interface OverlayView {
   position: string;
@@ -26,6 +30,7 @@ export interface OverlayView {
  */
 export class Hub implements OverlayTransport {
   private overlayWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  private probeWss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   private panelWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   private overlays = new Map<string, OverlayClient>();
   private panels = new Set<WebSocket>();
@@ -47,6 +52,8 @@ export class Hub implements OverlayTransport {
     this.allowedOrigins = allowedOrigins;
     this.overlayWss.on('connection', (ws, req) => this.onOverlay(ws, req));
     this.panelWss.on('connection', (ws) => this.onPanel(ws));
+    // Проверка «бот запущен?» для файла-загрузчика: ответ и сразу закрытие, никаких данных бота.
+    this.probeWss.on('connection', (ws) => { ws.on('error', () => {}); ws.send(JSON.stringify({ type: 'ready', app: 'twitch-alert-bot' }), () => ws.close(1000)); });
     this.heartbeat = setInterval(() => this.beat(), 15_000);
     this.heartbeat.unref();
   }
@@ -54,11 +61,14 @@ export class Hub implements OverlayTransport {
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     const url = new URL(req.url ?? '/', 'http://x');
     const origin = req.headers.origin;
-    if (origin && !this.allowedOrigins().includes(origin)) {
+    // Загрузчик открыт как локальный файл (в OBS — http://absolute/…), поэтому для /ws/probe разрешены и эти источники.
+    const allowed = url.pathname === '/ws/probe' ? [...this.allowedOrigins(), ...PROBE_ORIGINS] : this.allowedOrigins();
+    if (origin && !allowed.includes(origin)) {
       this.log.warn(`Отклонено WebSocket-подключение с чужого источника: ${origin.slice(0, 100)}`);
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return;
     }
     if (url.pathname === '/ws/overlay') this.overlayWss.handleUpgrade(req, socket, head, (ws) => this.overlayWss.emit('connection', ws, req));
+    else if (url.pathname === '/ws/probe') this.probeWss.handleUpgrade(req, socket, head, (ws) => this.probeWss.emit('connection', ws, req));
     else if (url.pathname === '/ws/panel') this.panelWss.handleUpgrade(req, socket, head, (ws) => this.panelWss.emit('connection', ws, req));
     else { socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); }
   }
@@ -66,11 +76,11 @@ export class Hub implements OverlayTransport {
   private onOverlay(ws: WebSocket, req: IncomingMessage): void {
     const id = crypto.randomUUID().slice(0, 8);
     const ua = String(req.headers['user-agent'] ?? '');
-    const client: OverlayClient = { id, ws, app: detectStreamAppFromUA(ua), connectedAt: Date.now(), alive: true, ua };
+    const client: OverlayClient = { id, ws, app: detectStreamAppFromUA(ua), viaFile: false, connectedAt: Date.now(), alive: true, ua };
     this.overlays.set(id, client);
     ws.on('pong', () => { client.alive = true; });
     ws.on('message', (data) => {
-      let m: { type?: string; id?: string; message?: string; isObs?: boolean; app?: unknown; mediaId?: string; ok?: boolean; durationMs?: number };
+      let m: { type?: string; id?: string; message?: string; isObs?: boolean; app?: unknown; via?: unknown; mediaId?: string; ok?: boolean; durationMs?: number };
       try { m = JSON.parse(data.toString()); } catch { return; }
       client.alive = true;
       try {
@@ -79,7 +89,8 @@ export class Hub implements OverlayTransport {
             // Overlay сам видит window.obsstudio (есть и в OBS, и в Streamlabs) — доверяем ему, если User-Agent не подсказал.
             if (isStreamApp(m.app) && (client.app === null || m.app === 'streamlabs')) client.app = m.app;
             else if (m.isObs && client.app === null) client.app = 'obs';
-            this.log.info(`Overlay подключён (${client.app ? STREAM_APPS[client.app].name : 'браузер'}), id ${id}`);
+            client.viaFile = m.via === 'file';
+            this.log.info(`Overlay подключён (${client.app ? STREAM_APPS[client.app].name : 'браузер'}${client.viaFile ? ', через файл' : ''}), id ${id}`);
             this.onOverlayConnected(this.info(client));
             break;
           case 'ended': if (m.id) this.onOverlayResult(id, String(m.id), 'ended'); break;
@@ -127,7 +138,7 @@ export class Hub implements OverlayTransport {
   }
 
   private info(c: OverlayClient): OverlayInfo {
-    return { id: c.id, isObs: c.app !== null, app: c.app, connectedAt: c.connectedAt };
+    return { id: c.id, isObs: c.app !== null, app: c.app, viaFile: c.viaFile, connectedAt: c.connectedAt };
   }
 
   overlayList(): OverlayInfo[] {
@@ -172,6 +183,6 @@ export class Hub implements OverlayTransport {
     clearInterval(this.heartbeat);
     for (const c of this.overlays.values()) { try { c.ws.close(1001, 'shutdown'); } catch { /* */ } }
     for (const p of this.panels) { try { p.close(1001, 'shutdown'); } catch { /* */ } }
-    await Promise.all([new Promise((r) => this.overlayWss.close(() => r(null))), new Promise((r) => this.panelWss.close(() => r(null)))]);
+    await Promise.all([this.overlayWss, this.panelWss, this.probeWss].map((w) => new Promise((r) => w.close(() => r(null)))));
   }
 }

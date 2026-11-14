@@ -14,6 +14,7 @@ import { Backoff } from './backoff.ts';
 import { MediaFinder } from './find.ts';
 import { STREAM_APPS, backupScenes as copySceneFiles } from './stream-app.ts';
 import { Updater } from './update.ts';
+import { writeLoader } from './overlay-loader.ts';
 import type { Transport } from './net/safe-download.ts';
 
 export interface AppOptions {
@@ -58,6 +59,8 @@ export class App extends EventEmitter {
   port: number;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private subscribedSessions = new Set<string>();
+  /** Файл-загрузчик overlay для «Локального файла» в OBS/Streamlabs (пусто, если записать не удалось). */
+  loaderPath = '';
   /** Первичная синхронизация наград (для тестов и диагностики). */
   initialSync: Promise<unknown> = Promise.resolve();
 
@@ -189,6 +192,7 @@ export class App extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    try { this.loaderPath = writeLoader(this.opts.paths.dataDir, this.port); } catch (e) { this.log.warn('Не удалось записать файл-загрузчик overlay', e); }
     await this.auth.init();
     if (this.auth.state.status === 'ok') {
       this.initialSync = this.syncRewards().catch((e) => this.log.warn('Синхронизация наград при старте не удалась', e));

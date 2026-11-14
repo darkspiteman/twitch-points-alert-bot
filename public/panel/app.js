@@ -200,6 +200,31 @@
     return { cls: stream.length ? 'ok' : 'warn', text: 'Подключён', detail: stream.length ? parts.join(', ') : 'Только предпросмотр в браузере' };
   }
 
+  /** Поле «только для чтения» с кнопкой «Копировать» (и необязательной второй кнопкой). */
+  function copyField(value, done, extra) {
+    var inp = h('input', { type: 'text', value: value, readonly: true });
+    return h('div', { class: 'copy-field' }, inp, h('button', { text: 'Копировать', onclick: function () {
+      inp.select();
+      (navigator.clipboard ? navigator.clipboard.writeText(value) : Promise.reject()).then(function () { toast(done, 'ok'); }, function () { document.execCommand('copy'); toast(done, 'ok'); });
+    } }), extra || null);
+  }
+
+  /** Источник в программе для стрима открыт по адресу, а не через файл-загрузчик — подсказать переключить. */
+  function loaderTipNeeded(st) {
+    var stream = st.overlays.filter(function (o) { return o.isObs; });
+    return !!S.overlayLoader && stream.length > 0 && !stream.some(function (o) { return o.viaFile; });
+  }
+  function loaderTipBox() {
+    return h('div', { class: 'infobox' },
+      h('p', { style: 'margin:0 0 6px' }, h('b', { text: 'Источник в ' + appShort() + ' открыт по адресу. ' }),
+        'Если запустить ' + appShort() + ' раньше бота, оповещения не появятся, пока не обновите источник вручную. Переключите источник на файл — тогда порядок запуска неважен:'),
+      h('ol', { style: 'margin:0 0 6px; padding-left:20px' },
+        h('li', { text: 'В ' + appShort() + ' откройте свойства источника бота (например, «Alert Bot»).' }),
+        h('li', { text: 'Поставьте галочку «Локальный файл», нажмите «Обзор» и выберите файл (путь можно вставить в строку «Имя файла»):' }),
+        h('li', { text: 'Нажмите «ОК». Остальные настройки источника не меняйте.' })),
+      copyField(S.overlayLoader, 'Путь скопирован'));
+  }
+
   function switchToStreamlabsBox() {
     return h('div', { class: 'infobox' },
       h('p', { style: 'margin:0 0 6px' }, h('b', { text: 'Overlay подключён из Streamlabs Desktop. ' }),
@@ -247,6 +272,7 @@
         }))));
     }
     if (streamlabsDetected(st)) root.appendChild(switchToStreamlabsBox());
+    if (loaderTipNeeded(st)) root.appendChild(loaderTipBox());
 
     var tw = twitchView(st);
     var twActions = st.auth.status === 'ok' ? [] : [h('button', { class: 'primary small', text: 'Войти', onclick: function () { location.hash = '#settings'; } })];
@@ -948,18 +974,17 @@
     var root = clear($('page-settings'));
     root.appendChild(h('h1', { text: 'Настройки' }));
 
-    var copyInput = h('input', { type: 'text', value: S.overlayUrl, readonly: true });
     root.appendChild(h('div', { class: 'grid cols-2' },
       h('div', { class: 'card' }, h('h2', { text: 'Twitch' }),
         settingField('Client ID приложения Twitch', 'clientId', { hint: 'Создайте приложение на dev.twitch.tv/console (тип клиента — «Общедоступный / Public»). Подробно — в разделе «Помощь».' }),
         settingField('Разрешить боту управлять наградами', 'allowManageRewards', { type: 'check', hint: 'Нужно для создания копий наград и возврата баллов при сбое. Без этого бот только читает события.' }),
         h('div', { id: 'auth-box' })),
       h('div', { class: 'card' }, h('h2', { text: 'Overlay' }),
-        h('div', { class: 'field' }, h('label', { text: 'Адрес для Browser Source (OBS Studio или Streamlabs Desktop)' }),
-          h('div', { class: 'copy-field' }, copyInput, h('button', { text: 'Копировать', onclick: function () {
-            copyInput.select();
-            (navigator.clipboard ? navigator.clipboard.writeText(S.overlayUrl) : Promise.reject()).then(function () { toast('Адрес скопирован', 'ok'); }, function () { document.execCommand('copy'); toast('Адрес скопирован', 'ok'); });
-          } }), h('a', { class: 'btn', href: '/overlay', target: '_blank', text: 'Открыть' }))),
+        S.overlayLoader ? h('div', { class: 'field' }, h('label', { text: 'Файл для источника — рекомендуется' }),
+          copyField(S.overlayLoader, 'Путь скопирован', h('button', { text: 'Папка', onclick: function () { act(post('/api/open-folder', { which: 'data' })); } })),
+          h('div', { class: 'hint', text: 'В свойствах источника «Браузер» поставьте галочку «Локальный файл» и выберите этот файл. Тогда неважно, что запущено раньше — ' + appShort() + ' или бот: источник дождётся бота и подключится сам.' })) : null,
+        h('div', { class: 'field' }, h('label', { text: S.overlayLoader ? 'Или адрес (URL) — тогда запускайте бота раньше ' + appShort() : 'Адрес для Browser Source (OBS Studio или Streamlabs Desktop)' }),
+          copyField(S.overlayUrl, 'Адрес скопирован', h('a', { class: 'btn', href: '/overlay', target: '_blank', text: 'Открыть' }))),
         h('div', { class: 'form-grid' },
           settingField('Общая громкость, %', 'masterVolume', { type: 'number', min: 0, max: 100 }),
           settingField('Положение', 'overlayPosition', { type: 'select', options: [['center', 'По центру'], ['top', 'Сверху'], ['bottom', 'Снизу'], ['left', 'Слева'], ['right', 'Справа'], ['top-left', 'Сверху слева'], ['top-right', 'Сверху справа'], ['bottom-left', 'Снизу слева'], ['bottom-right', 'Снизу справа']] }),
@@ -1084,9 +1109,17 @@
     var helpTabs = h('div', { class: 'tabs' }, ['obs', 'streamlabs'].map(function (k) {
       return h('button', { class: ha === k ? 'active' : '', text: APPS[k].name, onclick: function () { helpApp = k; renderHelp(); } });
     }));
+    // Файл-загрузчик: источник открывается всегда и ждёт бота, поэтому неважно, что запущено раньше.
+    var fileStep = function (where) {
+      return S.overlayLoader ? h('li', null, 'Поставьте галочку «Локальный файл» (Local file), нажмите «Обзор» (Browse) и выберите файл ', h('code', { text: S.overlayLoader }),
+        ' — путь можно вставить в строку «Имя файла». Так источник сам дождётся бота, даже если ' + where + ' запущен раньше. ',
+        h('span', { class: 'muted', text: 'Можно и без файла — указать URL ' }), h('code', { text: S.overlayUrl }),
+        h('span', { class: 'muted', text: ', но тогда запускайте бота раньше ' + where + ', иначе источник придётся обновлять вручную (правой кнопкой → «Обновить»).' }))
+        : h('li', null, 'URL: ', h('code', { text: S.overlayUrl }));
+    };
     var sourceSteps = ha === 'streamlabs' ? h('ol', null,
       h('li', { text: 'В Streamlabs Desktop: в блоке «Источники» (Sources) нажмите «+» → «Веб-источник» (Browser Source) → «Добавить источник». Название: «Alert Bot».' }),
-      h('li', null, 'Ссылка (URL): ', h('code', { text: S.overlayUrl })),
+      fileStep('Streamlabs'),
       h('li', { text: 'Ширина 1920, высота 1080 (источник растянется на весь экран; при другом разрешении он масштабируется сам).' }),
       h('li', { text: 'Включите «Управление аудио через Streamlabs Desktop» (Control audio via Streamlabs Desktop) — звук оповещений появится в «Микшере» и попадёт в эфир. Выключите «Отключать источник, когда не видим» — иначе оповещения ждут, пока сцена неактивна.' }),
       h('li', { text: 'Чтобы слышать оповещения в наушниках: «Микшер» → шестерёнка → «Дополнительные настройки звука» → у «Alert Bot» в столбце «Мониторинг звука» выберите «Мониторинг и вывод звука».' }),
@@ -1095,13 +1128,14 @@
       h('li', { text: 'Нажмите «Тестовое оповещение» на главной. Звук играет сам, без кликов — как и в OBS.' }))
       : h('ol', null,
         h('li', { text: 'В OBS: «Источники» → «+» → «Браузер». Название: «Alert Bot».' }),
-        h('li', null, 'URL: ', h('code', { text: S.overlayUrl })),
+        fileStep('OBS'),
         h('li', { text: 'Ширина 1920, высота 1080 (источник растянется на весь экран; при другом разрешении он масштабируется сам).' }),
         h('li', { text: 'Включите «Управлять аудио через OBS». Выключите «Отключать источник, когда он не виден» — иначе оповещения ждут, пока сцена неактивна.' }),
         h('li', { text: 'Чтобы слышать оповещения в наушниках: «Расширенные свойства аудио» → «Мониторинг звука» → «Монитор и вывод».' }),
         h('li', { text: 'Добавьте ОДИН источник и используйте его во всех сценах через «Добавить существующий» — иначе звук будет двоиться.' }),
         h('li', { text: 'Нажмите «Тестовое оповещение» на главной.' }));
     root.appendChild(h('div', { class: 'card' }, h('h2', { text: '2. Источник в программе для стрима' }), helpTabs, sourceSteps,
+      S.overlayLoader ? h('p', { class: 'small muted', style: 'margin:0 0 6px', text: 'Источник уже добавлен по адресу? Откройте его свойства, поставьте «Локальный файл», выберите файл выше и нажмите «ОК» — остальное менять не нужно.' }) : null,
       h('p', { class: 'small muted', style: 'margin:0', text: 'Не держите источник одновременно в OBS и в Streamlabs: если обе программы открыты, оповещение прозвучит дважды.' })));
     root.appendChild(h('div', { class: 'card' }, h('h2', { text: '3. Как добавить новую награду' }),
       h('ol', null,

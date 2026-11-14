@@ -40,6 +40,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       ok: true, version: s.version, uptimeSec: s.uptimeSec,
       twitch: s.auth.status, eventsub: s.eventsub.state, overlays: s.overlays.length, obsOverlays: s.overlays.filter((o) => o.isObs).length, mode: s.mode,
       streamApp: app.db.getSettings().streamApp, streamlabsOverlays: s.overlays.filter((o) => o.app === 'streamlabs').length,
+      viaFileOverlays: s.overlays.filter((o) => o.isObs && o.viaFile).length,
     };
   });
 
@@ -57,6 +58,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     events: app.db.recentEvents(100),
     autostart: await getAutostart().catch(() => false),
     overlayUrl: `http://127.0.0.1:${app.port}/overlay`,
+    overlayLoader: app.loaderPath,
   }));
 
   add('POST', '/api/auth/login', async () => app.auth.startLogin());
