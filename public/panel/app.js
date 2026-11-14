@@ -970,13 +970,62 @@
     }
   }
 
+  // Client ID скрыт, чтобы случайно не показать его на стриме; «Показать» открывает его на 30 секунд.
+  var clientIdShown = false;
+  var clientIdTimer = 0;
+  function rerenderClientId() {
+    var box = $('clientid-box');
+    if (box) { clear(box); box.appendChild(clientIdField()); }
+  }
+  function clientIdField() {
+    var id = S.settings.clientId || '';
+    var label = h('label', { text: 'Client ID приложения Twitch' });
+    var hint = h('span', { class: 'hint', text: 'Создайте приложение на dev.twitch.tv/console (тип клиента — «Общедоступный / Public»). Подробно — в разделе «Помощь».' +
+      (id ? ' Client ID скрыт, чтобы случайно не показать его на стриме.' : '') });
+    if (id && !clientIdShown) {
+      return h('div', { class: 'field' }, label,
+        h('div', { class: 'copy-field' },
+          h('input', { type: 'text', value: '•'.repeat(Math.min(id.length, 30)), readonly: true, 'aria-label': 'Client ID скрыт' }),
+          h('button', { text: 'Показать', onclick: function () {
+            clientIdShown = true;
+            rerenderClientId();
+            clearTimeout(clientIdTimer);
+            clientIdTimer = setTimeout(function hideLater() {
+              var inp = $('clientid-input');
+              if (inp && document.activeElement === inp) { clientIdTimer = setTimeout(hideLater, 5000); return; }
+              clientIdShown = false;
+              rerenderClientId();
+            }, 30000);
+          } })),
+        hint);
+    }
+    var inp = h('input', { id: 'clientid-input', type: 'text', value: id, autocomplete: 'off', spellcheck: 'false', placeholder: 'вставьте Client ID' });
+    inp.addEventListener('change', function () {
+      saveSetting('clientId', inp.value.trim()).then(function () {
+        clientIdShown = false;
+        clearTimeout(clientIdTimer);
+        rerenderClientId();
+        renderAuthBox();
+      });
+    });
+    return h('div', { class: 'field' }, label,
+      h('div', { class: 'copy-field' }, inp, id ? h('button', { text: 'Скрыть', onclick: function () {
+        clientIdShown = false;
+        clearTimeout(clientIdTimer);
+        rerenderClientId();
+      } }) : null),
+      hint);
+  }
+
   function renderSettings() {
     var root = clear($('page-settings'));
+    clientIdShown = false;
+    clearTimeout(clientIdTimer);
     root.appendChild(h('h1', { text: 'Настройки' }));
 
     root.appendChild(h('div', { class: 'grid cols-2' },
       h('div', { class: 'card' }, h('h2', { text: 'Twitch' }),
-        settingField('Client ID приложения Twitch', 'clientId', { hint: 'Создайте приложение на dev.twitch.tv/console (тип клиента — «Общедоступный / Public»). Подробно — в разделе «Помощь».' }),
+        h('div', { id: 'clientid-box' }, clientIdField()),
         settingField('Разрешить боту управлять наградами', 'allowManageRewards', { type: 'check', hint: 'Нужно для создания копий наград и возврата баллов при сбое. Без этого бот только читает события.' }),
         h('div', { id: 'auth-box' })),
       h('div', { class: 'card' }, h('h2', { text: 'Overlay' }),
