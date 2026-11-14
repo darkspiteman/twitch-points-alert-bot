@@ -67,12 +67,17 @@
   var page = 'home';
   var ws = null;
   var probed = {};
+  var bootVersion = '';
 
   function load() {
     return api('GET', '/api/state').then(function (s) {
+      // Бот обновился — загружаем новую версию панели целиком.
+      if (bootVersion && s.status.version !== bootVersion) { location.reload(); return; }
+      bootVersion = s.status.version;
       S = s;
       $('conn-banner').hidden = true;
       render();
+      renderUpdateUi();
       probeMedia();
     }, function (e) {
       $('conn-banner').hidden = false;
@@ -93,10 +98,11 @@
       else if (m.type === 'queue') { S.queue = m.queue; if (page === 'home') renderQueue(); }
       else if (m.type === 'event') { S.events.unshift(m.event); S.events = S.events.slice(0, 200); if (page === 'home') renderEventsMini(); if (page === 'log') renderLog(); }
       else if (m.type === 'invalidate') reloadSoon();
+      else if (m.type === 'update') { S.update = m.update; renderUpdateUi(); if (page === 'support') renderSupport(); }
     };
     ws.onclose = function () {
       $('conn-banner').hidden = false;
-      $('conn-banner').textContent = 'Нет связи с ботом. Переподключение…';
+      $('conn-banner').textContent = S && S.update && S.update.step === 'restart' ? 'Бот перезапускается после обновления…' : 'Нет связи с ботом. Переподключение…';
       setTimeout(connectWs, 2000);
     };
   }
@@ -140,6 +146,7 @@
     else if (page === 'rewards') renderRewards();
     else if (page === 'media') renderMedia();
     else if (page === 'find') renderFind();
+    else if (page === 'support') renderSupport();
     else if (page === 'settings') renderSettings();
     else if (page === 'log') renderLog();
     else if (page === 'help') renderHelp();
@@ -733,6 +740,124 @@
       h('p', { class: 'small muted' }, 'Нужна прямая ссылка на сам файл: MP3, WAV, OGG, M4A, MP4 (H.264), WebM, GIF, PNG, JPG или WebP, до 200 МБ. ',
         'Ссылки на страницы YouTube, TikTok и т. п. не подойдут. Используйте только файлы, которые вам разрешено показывать на стриме.'),
       F.lastUrlRow ? h('div', { class: 'row', style: 'margin-top:8px' }, h('span', { text: 'Добавлено: ' + F.lastUrlRow.name }), addedActions(F.lastUrlRow)) : null));
+  }
+
+  // ---------------- Поддержать автора и обновления ----------------
+  function extLink(href, text, cls) {
+    return h('a', { class: cls || 'btn', href: href, target: '_blank', rel: 'noopener noreferrer', text: text });
+  }
+
+  function changesList(entries) {
+    return h('div', { class: 'changes' }, entries.map(function (e) {
+      return h('div', { class: 'change-ver' },
+        h('div', { class: 'change-head' }, h('b', { text: 'Версия ' + e.version }), e.date ? h('span', { class: 'muted small', text: ' · ' + new Date(e.date).toLocaleDateString('ru-RU') }) : null),
+        h('ul', null, e.changes.map(function (c) { return h('li', { text: c }); })));
+    }));
+  }
+
+  // Модальное окно (одно на странице).
+  function modal(title, body, buttons) {
+    closeModal();
+    var box = h('div', { class: 'modal-back', id: 'modal' },
+      h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+        h('h2', { text: title }), body, h('div', { class: 'row modal-actions' }, buttons)));
+    box.addEventListener('click', function (e) { if (e.target === box && !updateBusy()) closeModal(); });
+    document.body.appendChild(box);
+  }
+  function closeModal() { var m = $('modal'); if (m) m.remove(); }
+  function updateBusy() { var u = S && S.update; return !!u && ['download', 'unpack', 'copy', 'deps', 'launcher', 'restart'].indexOf(u.step) >= 0; }
+
+  var whatsNewShown = false;
+  var updateWanted = false; // пользователь нажал «Обновить» — показываем ход установки
+  function dismissedVersion() { try { return localStorage.getItem('tab-update-dismissed') || ''; } catch (e) { return ''; } }
+  function dismissVersion(v) { try { localStorage.setItem('tab-update-dismissed', v); } catch (e) { /* */ } }
+
+  /** Окно «Что нового» после обновления и полоса «Доступна новая версия». */
+  function renderUpdateUi() {
+    var u = S && S.update;
+    if (!u) return;
+    var bar = $('update-bar');
+    if (u.available && !updateBusy()) {
+      bar.hidden = false;
+      clear(bar).appendChild(h('div', { class: 'row' },
+        h('span', { class: 'grow' }, '🎉 Доступна новая версия бота ', h('b', { text: u.latest }), ' (у вас ' + u.current + ')'),
+        h('button', { class: 'small primary', text: 'Что нового и обновить', onclick: showUpdateModal })));
+      if (!$('modal') && !whatsNewShown && dismissedVersion() !== u.latest) { dismissVersion(u.latest); showUpdateModal(); }
+    } else bar.hidden = true;
+
+    if (updateWanted || updateBusy()) { showProgressModal(); return; }
+    if (u.whatsNew && u.whatsNew.length && !whatsNewShown && !$('modal')) {
+      whatsNewShown = true;
+      modal('Бот обновлён до версии ' + u.current, h('div', null, h('p', { class: 'muted', text: 'Что нового:' }), changesList(u.whatsNew)),
+        [h('button', { class: 'primary', text: 'Понятно', onclick: function () { closeModal(); post('/api/update/seen').then(load, function () {}); } })]);
+    }
+  }
+
+  function showUpdateModal() {
+    var u = S.update;
+    var body = h('div', null,
+      h('p', null, 'Установлена версия ', h('b', { text: u.current }), ', доступна ', h('b', { text: u.latest }), '.'),
+      changesList(u.notes || []),
+      u.canInstall ? h('p', { class: 'small muted', text: 'Бот скачает новую версию с GitHub, установит её и перезапустится (около минуты). Настройки, награды, медиафайлы и вход в Twitch сохранятся. Во время эфира лучше обновлять в перерыве: на время перезапуска оповещения не играют.' })
+        : h('div', { class: 'warnbox', text: u.reason || 'Обновление сейчас недоступно.' }));
+    var btns = [];
+    if (u.canInstall) btns.push(h('button', { class: 'primary', text: 'Обновить сейчас', onclick: function () {
+      updateWanted = true;
+      act(post('/api/update/install', { confirm: true })).then(function () { showProgressModal(); }, function () { updateWanted = false; });
+    } }));
+    btns.push(h('button', { text: 'Позже', onclick: closeModal }));
+    modal('Доступно обновление', body, btns);
+  }
+
+  function showProgressModal() {
+    var u = S.update;
+    if (u.step === 'error') {
+      updateWanted = false;
+      modal('Обновление не установлено', h('div', null, h('div', { class: 'warnbox', text: u.error || 'Неизвестная ошибка' }),
+        h('p', { class: 'small muted', text: 'Бот продолжает работать на прежней версии. Подробности — в «Журнале».' })),
+        [h('button', { text: 'Закрыть', onclick: closeModal })]);
+      return;
+    }
+    var text = u.stepText || 'Подготовка…';
+    if (u.step === 'restart') text = 'Обновление установлено. Бот перезапускается — панель обновится сама через несколько секунд…';
+    modal('Обновление до версии ' + (u.latest || ''), h('div', null, h('div', { class: 'progress-line' }, h('span', { class: 'spinner' }), h('span', { text: text }))), []);
+  }
+
+  function renderSupport() {
+    var root = clear($('page-support'));
+    var L = S.links || {};
+    var u = S.update || {};
+    root.appendChild(h('h1', { text: 'Поддержать автора' }));
+    root.appendChild(h('div', { class: 'grid cols-2' },
+      h('div', { class: 'card support-card' },
+        h('h2', { text: '❤ Поддержать на Boosty' }),
+        h('p', { text: 'Бот бесплатный и работает без подписок. Если он вам пригодился — поддержите разработку: это помогает добавлять новые функции и быстрее исправлять ошибки.' }),
+        extLink(L.boosty, '❤ Задонатить на Boosty', 'btn primary')),
+      h('div', { class: 'card' },
+        h('h2', { text: '💡 Новые предложения' }),
+        h('p', { text: 'Не хватает какой-то функции или нашли ошибку? Напишите — лучшие идеи попадут в следующие версии.' }),
+        h('div', { class: 'row' },
+          extLink(L.ideas, 'Предложить на GitHub'),
+          extLink(L.boostyProfile, 'Написать на Boosty')),
+        h('p', { class: 'small muted', style: 'margin-top:8px', text: 'GitHub: нужен бесплатный аккаунт, предложение увидят и другие пользователи. Boosty: личное сообщение автору.' }))));
+
+    var status = u.checking ? 'Проверка…'
+      : u.available ? 'Доступна версия ' + u.latest
+      : u.error ? 'Не удалось проверить: ' + u.error
+      : u.lastCheckAt ? 'У вас последняя версия' : 'Ещё не проверялось';
+    root.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', { text: 'Обновления' }),
+        h('div', { class: 'row' },
+          u.available ? h('button', { class: 'primary small', text: 'Обновить до ' + u.latest, onclick: showUpdateModal }) : null,
+          h('button', { class: 'small', text: u.checking ? 'Проверка…' : 'Проверить обновления', disabled: u.checking, onclick: function () {
+            act(post('/api/update/check')).then(function (r) { S.update = r; renderSupport(); renderUpdateUi(); toast(r.available ? 'Доступна версия ' + r.latest : r.error ? r.error : 'У вас последняя версия', r.error ? 'bad' : 'ok'); });
+          } }))),
+      h('p', null, 'Установлена версия ', h('b', { text: u.current || S.status.version }), ' · ', h('span', { class: 'muted', text: status + (u.lastCheckAt ? ' (' + fmtTime(u.lastCheckAt) + ')' : '') })),
+      settingField('Проверять обновления автоматически (раз в 6 часов)', 'autoUpdateCheck', { type: 'check' }),
+      u.reason ? h('p', { class: 'small muted', text: u.reason }) : null,
+      h('h3', { text: 'История изменений' }),
+      changesList(S.changelog || []),
+      h('p', { class: 'small muted' }, 'Исходный код: ', extLink(L.repo, 'GitHub', 'plain'))));
   }
 
   // ---------------- Настройки ----------------

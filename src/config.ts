@@ -4,10 +4,25 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 export const APP_NAME = 'TwitchAlertBot';
-export const APP_VERSION = '1.0.0';
 
 /** Корень проекта (папка, где лежат src/ и public/). */
 export const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/** Версия берётся из package.json — единственный источник номера версии. */
+export const APP_VERSION: string = (() => {
+  try { return String(JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || '0.0.0'); } catch { return '0.0.0'; }
+})();
+
+/** Публичный репозиторий, откуда приходят обновления. */
+export const UPDATE_REPO = 'darkspiteman/twitch-points-alert-bot';
+export const SUPPORT_LINKS = {
+  /** Сразу открывает окно доната. */
+  boosty: 'https://boosty.to/spiteman/donate',
+  /** Страница автора (личные сообщения). */
+  boostyProfile: 'https://boosty.to/spiteman',
+  ideas: `https://github.com/${UPDATE_REPO}/issues/new?labels=enhancement&title=${encodeURIComponent('Идея: ')}`,
+  repo: `https://github.com/${UPDATE_REPO}`,
+};
 export const PUBLIC_DIR = path.join(APP_ROOT, 'public');
 
 export function resolveDataDir(): string {
@@ -81,6 +96,8 @@ export interface Settings {
   freesoundApiKey: string;
   /** Фильтр «взрослого» контента Klipy. */
   klipyContentFilter: 'off' | 'low' | 'medium' | 'high';
+  /** Проверять наличие новой версии бота на GitHub. */
+  autoUpdateCheck: boolean;
 }
 
 export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey'] as const;
@@ -126,6 +143,7 @@ export function defaultSettings(): Settings {
     klipyApiKey: '',
     freesoundApiKey: '',
     klipyContentFilter: 'medium',
+    autoUpdateCheck: true,
   };
 }
 
@@ -162,7 +180,7 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (!allowed.includes(String(patch[k]))) throw new Error('Неверное положение overlay');
           out[k] = patch[k]; break;
         }
-        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly':
+        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck':
           out[k] = Boolean(patch[k]); break;
         case 'clientId': {
           const v = String(patch[k] ?? '').trim();

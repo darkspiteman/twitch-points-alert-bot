@@ -159,6 +159,17 @@ namespace TwitchAlertBot
                 attached = true;
                 return;
             }
+            if (code == 4)
+            {
+                // Установлено обновление — сразу запускаем новую версию.
+                restartDelay = 2000;
+                BeginInvokeUi(delegate
+                {
+                    ShowBalloon("Twitch Alert Bot", "Обновление установлено, бот перезапускается", ToolTipIcon.Info);
+                    StartBot();
+                });
+                return;
+            }
             if (code == 0)
             {
                 // Корректная остановка из панели — закрываем и лаунчер.

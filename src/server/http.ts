@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import type { App } from '../app.ts';
-import { PUBLIC_DIR, validateSettingsPatch, publicSettings } from '../config.ts';
+import { PUBLIC_DIR, validateSettingsPatch, publicSettings, SUPPORT_LINKS } from '../config.ts';
 import { FindError, KLIPY_TYPES, type KlipyType } from '../find.ts';
 import { HelixError } from '../twitch/helix.ts';
 import { MAX_UPLOAD_BYTES } from '../media.ts';
@@ -45,6 +45,9 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     status: app.statusSummary(),
     settings: publicSettings(app.db.getSettings()),
     find: app.finder.status(),
+    update: app.updater.status(),
+    links: SUPPORT_LINKS,
+    changelog: app.updater.localChangelog(),
     queue: app.queue.snapshot(),
     rewards: app.db.listRewards(),
     media: app.db.listMedia().map((m) => ({ ...m, usedBy: app.db.mediaUsage(m.id).map((r) => r.title) })),
@@ -209,6 +212,19 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     const r = app.router.testMedia(m);
     if (!r.ok) throw new HttpError(400, r.error ?? 'Ошибка');
     return r;
+  });
+
+  // ---------------- Обновления ----------------
+  add('GET', '/api/update', () => app.updater.status());
+  add('POST', '/api/update/check', () => app.updater.check());
+  add('POST', '/api/update/seen', () => { app.updater.markSeen(); return { ok: true }; });
+  add('POST', '/api/update/install', (_q, _r, _p, body) => {
+    if ((body as { confirm?: boolean } | null)?.confirm !== true) throw new HttpError(400, 'Требуется подтверждение');
+    const st = app.updater.status();
+    if (!st.canInstall) throw new HttpError(400, st.reason || (st.available ? 'Обновление уже устанавливается' : 'Новой версии нет'));
+    // Установка идёт в фоне; ход и ошибки приходят в панель через WebSocket.
+    app.updater.install().catch(() => {});
+    return { started: true };
   });
 
   // ---------------- Найти медиа ----------------

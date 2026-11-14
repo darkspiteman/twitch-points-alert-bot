@@ -1,5 +1,6 @@
 import fs from 'node:fs';
-import { makePaths, DEFAULT_PORT, APP_VERSION } from './config.ts';
+import path from 'node:path';
+import { makePaths, DEFAULT_PORT, APP_VERSION, APP_ROOT } from './config.ts';
 import { Logger } from './logger.ts';
 import { DpapiStore } from './secure-store.ts';
 import { App } from './app.ts';
@@ -67,6 +68,9 @@ async function main(): Promise<void> {
   log.info(`Запуск Twitch Alert Bot ${APP_VERSION}, данные: ${paths.dataDir}`);
   const app = new App({ paths, logger, store: new DpapiStore(paths.tokenFile), port });
   const server = createServer(app, { onShutdown: () => void shutdown('panel') });
+  // После установки обновления — выход с кодом 4: лаунчер сразу запускает новую версию.
+  app.updater.onRestart = () => void shutdown('update', 4);
+  try { fs.rmSync(path.join(APP_ROOT, 'TwitchAlertBot.exe.old'), { force: true }); } catch { /* старый лаунчер ещё работает */ }
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', (e: NodeJS.ErrnoException) => {
@@ -85,7 +89,7 @@ async function main(): Promise<void> {
   }
 
   let stopping = false;
-  async function shutdown(reason: string): Promise<void> {
+  async function shutdown(reason: string, exitCode = 0): Promise<void> {
     if (stopping) return;
     stopping = true;
     log.info(`Завершение работы (${reason})…`);
@@ -98,7 +102,7 @@ async function main(): Promise<void> {
     log.info('Работа завершена корректно');
     releaseLock();
     await logger.close();
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   process.on('SIGINT', () => void shutdown('SIGINT'));

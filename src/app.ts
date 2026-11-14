@@ -3,7 +3,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Db } from './db.ts';
 import { Logger, type ScopedLogger } from './logger.ts';
-import { type Paths, APP_VERSION } from './config.ts';
+import { type Paths, APP_VERSION, APP_ROOT, UPDATE_REPO } from './config.ts';
 import type { SecureStore } from './secure-store.ts';
 import { TwitchAuth, type FetchFn, SCOPE_MANAGE } from './twitch/auth.ts';
 import { HelixClient, HelixError, type HelixReward } from './twitch/helix.ts';
@@ -14,6 +14,7 @@ import { RedemptionRouter, REDEMPTION_TYPE, REDEMPTION_VERSION } from './router.
 import { Hub } from './server/hub.ts';
 import { Backoff } from './backoff.ts';
 import { MediaFinder } from './find.ts';
+import { Updater } from './update.ts';
 import type { Transport } from './net/safe-download.ts';
 
 export interface AppOptions {
@@ -31,6 +32,10 @@ export interface AppOptions {
   downloadTransport?: Transport;
   klipyBase?: string;
   freesoundBase?: string;
+  /** Папка программы (для обновлений; в тестах — временная). */
+  appRoot?: string;
+  /** Не проверять обновления автоматически (тесты). */
+  noAutoUpdateCheck?: boolean;
 }
 
 /**
@@ -49,6 +54,7 @@ export class App extends EventEmitter {
   readonly router: RedemptionRouter;
   readonly hub: Hub;
   readonly finder: MediaFinder;
+  readonly updater: Updater;
   readonly startedAt = Date.now();
   port: number;
   private cleanupTimer: NodeJS.Timeout | null = null;
@@ -81,6 +87,12 @@ export class App extends EventEmitter {
     this.finder = new MediaFinder({
       db: this.db, media: this.media, log: opts.logger.child('find'), journal: (l, t, m) => this.journal(l, t, m),
       fetchFn: opts.fetchFn, transport: opts.downloadTransport, klipyBase: opts.klipyBase, freesoundBase: opts.freesoundBase,
+    });
+    this.updater = new Updater({
+      db: this.db, log: opts.logger.child('update'), journal: (l, t, m) => this.journal(l, t, m),
+      appRoot: opts.appRoot ?? APP_ROOT, dataDir: opts.paths.dataDir, currentVersion: APP_VERSION, repo: UPDATE_REPO,
+      fetchFn: opts.fetchFn, transport: opts.downloadTransport,
+      onChange: (s) => this.hub.broadcastPanel({ type: 'update', update: s }),
     });
     this.queue = new PlaybackQueue(this.hub, () => this.db.getSettings(), opts.logger.child('queue'), (item) => this.finder.prepare(item));
     this.router = new RedemptionRouter({
@@ -189,6 +201,7 @@ export class App extends EventEmitter {
     this.cleanupTimer = setInterval(() => { try { this.db.cleanup(this.db.getSettings().historyRetentionDays); } catch { /* */ } }, 6 * 3600_000);
     this.cleanupTimer.unref();
     this.journal('info', 'startup', `Бот запущен (версия ${APP_VERSION})`);
+    if (!this.opts.noAutoUpdateCheck) this.updater.startAuto(() => this.db.getSettings().autoUpdateCheck);
   }
 
   /** Загрузка списка наград из Twitch. Награды других приложений помечаются как «не управляемые». */
@@ -328,6 +341,7 @@ export class App extends EventEmitter {
 
   async stop(): Promise<void> {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    this.updater.stop();
     this.auth.dispose();
     await this.eventsub.stop();
     const left = this.queue.dispose();
