@@ -4,6 +4,9 @@
 активирует награду за баллы канала, в OBS проигрывается звук, видео или анимация. Без облачных
 сервисов и без платного хостинга.
 
+> **Переходите с TriggerFyre?** Пошаговая инструкция — [docs/MIGRATION-TRIGGERFYRE.md](docs/MIGRATION-TRIGGERFYRE.md).
+> С Sound Alerts — [docs/MIGRATION.md](docs/MIGRATION.md).
+
 ---
 
 ## Установка (один раз)
