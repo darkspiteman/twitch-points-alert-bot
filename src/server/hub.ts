@@ -4,10 +4,13 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { OverlayTransport, PlayItem } from '../queue.ts';
 import type { ScopedLogger } from '../logger.ts';
+import { type StreamApp, STREAM_APPS, detectStreamAppFromUA, isStreamApp } from '../stream-app.ts';
 
-interface OverlayClient { id: string; ws: WebSocket; isObs: boolean; connectedAt: number; alive: boolean; ua: string }
+/** app — программа для стрима (OBS Studio / Streamlabs Desktop); null — обычный браузер (предпросмотр). */
+interface OverlayClient { id: string; ws: WebSocket; app: StreamApp | null; connectedAt: number; alive: boolean; ua: string }
 
-export interface OverlayInfo { id: string; isObs: boolean; connectedAt: number }
+/** isObs — overlay открыт в программе для стрима (OBS или Streamlabs), а не в браузере. Имя поля сохранено для совместимости. */
+export interface OverlayInfo { id: string; isObs: boolean; app: StreamApp | null; connectedAt: number }
 
 export interface OverlayView {
   position: string;
@@ -18,7 +21,7 @@ export interface OverlayView {
 }
 
 /**
- * WebSocket-хаб: /ws/overlay (OBS Browser Source) и /ws/panel (панель управления).
+ * WebSocket-хаб: /ws/overlay (Browser Source в OBS Studio или Streamlabs Desktop) и /ws/panel (панель управления).
  * Реализует OverlayTransport для очереди.
  */
 export class Hub implements OverlayTransport {
@@ -63,19 +66,21 @@ export class Hub implements OverlayTransport {
   private onOverlay(ws: WebSocket, req: IncomingMessage): void {
     const id = crypto.randomUUID().slice(0, 8);
     const ua = String(req.headers['user-agent'] ?? '');
-    const client: OverlayClient = { id, ws, isObs: /\bOBS\//i.test(ua), connectedAt: Date.now(), alive: true, ua };
+    const client: OverlayClient = { id, ws, app: detectStreamAppFromUA(ua), connectedAt: Date.now(), alive: true, ua };
     this.overlays.set(id, client);
     ws.on('pong', () => { client.alive = true; });
     ws.on('message', (data) => {
-      let m: { type?: string; id?: string; message?: string; isObs?: boolean; mediaId?: string; ok?: boolean; durationMs?: number };
+      let m: { type?: string; id?: string; message?: string; isObs?: boolean; app?: unknown; mediaId?: string; ok?: boolean; durationMs?: number };
       try { m = JSON.parse(data.toString()); } catch { return; }
       client.alive = true;
       try {
         switch (m.type) {
           case 'hello':
-            if (m.isObs) client.isObs = true;
-            this.log.info(`Overlay подключён (${client.isObs ? 'OBS' : 'браузер'}), id ${id}`);
-            this.onOverlayConnected({ id, isObs: client.isObs, connectedAt: client.connectedAt });
+            // Overlay сам видит window.obsstudio (есть и в OBS, и в Streamlabs) — доверяем ему, если User-Agent не подсказал.
+            if (isStreamApp(m.app) && (client.app === null || m.app === 'streamlabs')) client.app = m.app;
+            else if (m.isObs && client.app === null) client.app = 'obs';
+            this.log.info(`Overlay подключён (${client.app ? STREAM_APPS[client.app].name : 'браузер'}), id ${id}`);
+            this.onOverlayConnected(this.info(client));
             break;
           case 'ended': if (m.id) this.onOverlayResult(id, String(m.id), 'ended'); break;
           case 'error': if (m.id) this.onOverlayResult(id, String(m.id), 'error', String(m.message ?? '').slice(0, 300)); break;
@@ -121,15 +126,19 @@ export class Hub implements OverlayTransport {
     if (ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify(msg)); } catch { /* */ } }
   }
 
-  overlayList(): OverlayInfo[] {
-    return [...this.overlays.values()].map((c) => ({ id: c.id, isObs: c.isObs, connectedAt: c.connectedAt }));
+  private info(c: OverlayClient): OverlayInfo {
+    return { id: c.id, isObs: c.app !== null, app: c.app, connectedAt: c.connectedAt };
   }
 
-  /** Получатели: OBS-overlay, если есть; иначе — все (например, предпросмотр в браузере). */
+  overlayList(): OverlayInfo[] {
+    return [...this.overlays.values()].map((c) => this.info(c));
+  }
+
+  /** Получатели: overlay в программе для стрима (OBS или Streamlabs), если есть; иначе — все (например, предпросмотр в браузере). */
   overlayIds(): string[] {
     const all = [...this.overlays.values()];
-    const obs = all.filter((c) => c.isObs);
-    return (obs.length ? obs : all).map((c) => c.id);
+    const streaming = all.filter((c) => c.app !== null);
+    return (streaming.length ? streaming : all).map((c) => c.id);
   }
 
   play(ids: string[], item: PlayItem, effectiveDurationMs: number): void {

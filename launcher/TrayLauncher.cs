@@ -71,7 +71,7 @@ namespace TwitchAlertBot
             var open = new ToolStripMenuItem("Открыть панель управления", null, delegate { OpenPanel(); });
             open.Font = new Font(open.Font, FontStyle.Bold);
             menu.Items.Add(open);
-            menu.Items.Add(new ToolStripMenuItem("Скопировать адрес для OBS", null, delegate { CopyOverlayUrl(); }));
+            menu.Items.Add(new ToolStripMenuItem("Скопировать адрес overlay (OBS / Streamlabs)", null, delegate { CopyOverlayUrl(); }));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Перезапустить бота", null, delegate { RestartBot(); }));
             menu.Items.Add(new ToolStripMenuItem("Открыть папку логов", null, delegate { OpenFolder(Path.Combine(DataDir(), "logs")); }));
@@ -266,7 +266,9 @@ namespace TwitchAlertBot
                 var m = Regex.Match(j, "\"obsOverlays\":(\\d+)");
                 int obs = m.Success ? int.Parse(m.Groups[1].Value) : 0;
                 bool observe = j.Contains("\"mode\":\"observe\"");
-                string text = "Twitch " + (tw ? "✓" : "✗") + "  EventSub " + (es ? "✓" : "✗") + "  OBS " + (obs > 0 ? "✓" : "✗") + (observe ? "  (наблюдение)" : "");
+                // Программа для стрима, выбранная в настройках бота: OBS Studio или Streamlabs Desktop.
+                string appLabel = j.Contains("\"streamApp\":\"streamlabs\"") ? "Streamlabs" : "OBS";
+                string text = "Twitch " + (tw ? "✓" : "✗") + "  EventSub " + (es ? "✓" : "✗") + "  " + appLabel + " " + (obs > 0 ? "✓" : "✗") + (observe ? "  (наблюдение)" : "");
                 SetState(tw && es && obs > 0 ? "ok" : "partial", text);
                 if (!openedPanel)
                 {
@@ -296,7 +298,7 @@ namespace TwitchAlertBot
         void CopyOverlayUrl()
         {
             string url = "http://127.0.0.1:" + ReadPort() + "/overlay";
-            try { Clipboard.SetText(url); ShowBalloon("Адрес скопирован", url + "\nВставьте его в Browser Source в OBS.", ToolTipIcon.Info); } catch { }
+            try { Clipboard.SetText(url); ShowBalloon("Адрес скопирован", url + "\nВставьте его в Browser Source в OBS или Streamlabs.", ToolTipIcon.Info); } catch { }
         }
 
         public static void OpenUrl(string url)

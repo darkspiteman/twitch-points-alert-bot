@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { type StreamApp, isStreamApp, DEFAULT_OBS_EXE, defaultObsConfigDir, defaultStreamlabsConfigDir } from './stream-app.ts';
 
 export const APP_NAME = 'TwitchAlertBot';
 
@@ -81,8 +81,14 @@ export interface Settings {
   overlayPosition: 'center' | 'top' | 'bottom' | 'left' | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
   overlayMaxWidthPct: number;
   overlayMaxHeightPct: number;
+  /** Программа для стрима: OBS Studio или Streamlabs Desktop (кнопка запуска, резервная копия сцен, подсказки). */
+  streamApp: StreamApp;
   obsExePath: string;
   obsConfigDir: string;
+  /** Путь к Streamlabs Desktop; пустая строка — искать в стандартных папках. */
+  streamlabsExePath: string;
+  streamlabsConfigDir: string;
+  /** Запускать выбранную программу для стрима при автозапуске бота (имя сохранено ради совместимости). */
   launchObsWithBot: boolean;
   historyRetentionDays: number;
   recoverMissed: boolean;
@@ -133,8 +139,11 @@ export function defaultSettings(): Settings {
     overlayPosition: 'center',
     overlayMaxWidthPct: 60,
     overlayMaxHeightPct: 60,
-    obsExePath: 'C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe',
-    obsConfigDir: path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'obs-studio'),
+    streamApp: 'obs',
+    obsExePath: DEFAULT_OBS_EXE,
+    obsConfigDir: defaultObsConfigDir(),
+    streamlabsExePath: '',
+    streamlabsConfigDir: defaultStreamlabsConfigDir(),
     launchObsWithBot: false,
     historyRetentionDays: 30,
     recoverMissed: true,
@@ -200,7 +209,10 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (v.length > 200) throw new Error('Шаблон подписи слишком длинный');
           out[k] = v; break;
         }
-        case 'obsExePath': case 'obsConfigDir': {
+        case 'streamApp':
+          if (!isStreamApp(patch[k])) throw new Error('Неверная программа для стрима: выберите OBS Studio или Streamlabs Desktop');
+          out[k] = patch[k]; break;
+        case 'obsExePath': case 'obsConfigDir': case 'streamlabsExePath': case 'streamlabsConfigDir': {
           const v = String(patch[k] ?? '').trim();
           if (v.length > 500) throw new Error('Слишком длинный путь');
           out[k] = v; break;

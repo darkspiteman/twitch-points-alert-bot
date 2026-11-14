@@ -8,6 +8,7 @@ import { FindError, KLIPY_TYPES, type KlipyType } from '../find.ts';
 import { HelixError } from '../twitch/helix.ts';
 import { MAX_UPLOAD_BYTES } from '../media.ts';
 import { getAutostart, setAutostart } from '../autostart.ts';
+import { STREAM_APPS, resolveExe } from '../stream-app.ts';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -38,6 +39,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     return {
       ok: true, version: s.version, uptimeSec: s.uptimeSec,
       twitch: s.auth.status, eventsub: s.eventsub.state, overlays: s.overlays.length, obsOverlays: s.overlays.filter((o) => o.isObs).length, mode: s.mode,
+      streamApp: app.db.getSettings().streamApp, streamlabsOverlays: s.overlays.filter((o) => o.app === 'streamlabs').length,
     };
   });
 
@@ -83,7 +85,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       note = 'Client ID сохранён. Теперь нажмите «Войти через Twitch».';
     }
     if (ok.allowManageRewards !== undefined && ok.allowManageRewards !== before.allowManageRewards && app.auth.state.status === 'ok') note = 'Права изменены — войдите в Twitch заново, чтобы применить.';
-    if (ok.port !== undefined && ok.port !== before.port) note = 'Новый порт начнёт работать после перезапуска бота. Не забудьте изменить адрес в OBS.';
+    if (ok.port !== undefined && ok.port !== before.port) note = 'Новый порт начнёт работать после перезапуска бота. Не забудьте изменить адрес в Browser Source (OBS или Streamlabs).';
     if (ok.mode !== undefined) app.journal('info', 'settings', after.mode === 'observe' ? 'Включён режим наблюдения: оповещения не воспроизводятся' : 'Включён активный режим: оповещения воспроизводятся');
     if (ok.klipyApiKey !== undefined || ok.freesoundApiKey !== undefined) {
       app.finder.registerKeys();
@@ -140,7 +142,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     }
     const updated = app.db.updateRewardConfig(p.id, cfg);
     if (cfg.bot_enabled === 1 && !r.bot_enabled && !r.manageable && !r.id.startsWith('local-') && app.db.getSettings().mode === 'active') {
-      app.journal('warn', 'migration', `Награда «${r.title}» включена в боте. Если Sound Alerts всё ещё обрабатывает её — оповещение прозвучит дважды. Уберите источник Sound Alerts из OBS.`);
+      app.journal('warn', 'migration', `Награда «${r.title}» включена в боте. Если Sound Alerts всё ещё обрабатывает её — оповещение прозвучит дважды. Уберите источник Sound Alerts из OBS (или Streamlabs).`);
     }
     return updated;
   });
@@ -285,7 +287,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     return { autostart: await getAutostart() };
   });
   add('POST', '/api/obs/backup', () => {
-    try { return { dir: app.backupObs() }; } catch (e) { throw new HttpError(400, (e as Error).message); }
+    try { return { dir: app.backupScenes() }; } catch (e) { throw new HttpError(400, (e as Error).message); }
   });
   add('POST', '/api/obs/launch', () => launchObs(app));
   add('POST', '/api/open-folder', (_q, _r, _p, body) => {
@@ -448,16 +450,23 @@ function serveMedia(app: App, req: IncomingMessage, res: ServerResponse, idRaw: 
   fs.createReadStream(file).pipe(res);
 }
 
-function launchObs(app: App): Promise<{ ok: boolean; already?: boolean }> {
+/** Запуск выбранной программы для стрима (OBS Studio или Streamlabs Desktop), если она ещё не запущена. */
+function launchObs(app: App): Promise<{ ok: boolean; already?: boolean; app: string }> {
   const s = app.db.getSettings();
+  const info = STREAM_APPS[s.streamApp];
   return new Promise((resolve, reject) => {
-    execFile('tasklist.exe', ['/FI', 'IMAGENAME eq obs64.exe', '/NH'], { windowsHide: true }, (_e, out) => {
-      if (String(out).toLowerCase().includes('obs64.exe')) return resolve({ ok: true, already: true });
-      if (!s.obsExePath || !fs.existsSync(s.obsExePath)) return reject(new HttpError(400, 'OBS не найден по указанному пути. Проверьте путь в настройках.'));
+    execFile('tasklist.exe', ['/FI', `IMAGENAME eq ${info.processName}`, '/NH'], { windowsHide: true }, (_e, out) => {
+      if (String(out).toLowerCase().includes(info.processName.toLowerCase())) return resolve({ ok: true, already: true, app: info.name });
+      const exe = resolveExe(s);
+      if (!exe) {
+        return reject(new HttpError(400, s.streamApp === 'streamlabs'
+          ? 'Streamlabs Desktop не найден. Укажите путь к «Streamlabs OBS.exe» в «Настройки → Программа для стрима».'
+          : 'OBS не найден по указанному пути. Проверьте путь в «Настройки → Программа для стрима».'));
+      }
       try {
-        spawn(s.obsExePath, [], { cwd: path.dirname(s.obsExePath), detached: true, stdio: 'ignore' }).unref();
-        resolve({ ok: true });
-      } catch (e) { reject(new HttpError(500, `Не удалось запустить OBS: ${(e as Error).message}`)); }
+        spawn(exe, [], { cwd: path.dirname(exe), detached: true, stdio: 'ignore' }).unref();
+        resolve({ ok: true, app: info.name });
+      } catch (e) { reject(new HttpError(500, `Не удалось запустить ${info.name}: ${(e as Error).message}`)); }
     });
   });
 }

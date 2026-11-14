@@ -41,7 +41,7 @@ Twitch **не поддерживает PKCE** (в документации Autho
 ## Схема
 
 ```
-            Twitch EventSub WS ──► EventSubClient ──► RedemptionRouter ──► PlaybackQueue ──► OverlayHub ──► OBS Browser Source
+            Twitch EventSub WS ──► EventSubClient ──► RedemptionRouter ──► PlaybackQueue ──► OverlayHub ──► Browser Source (OBS / Streamlabs)
             Twitch Helix API  ◄── HelixClient ◄── Auth (device flow, refresh, validate)          ▲                (/overlay)
                                                                                                   │
    Панель (браузер) ◄── HTTP API + WS /ws/panel ── HttpServer (127.0.0.1) ──────────────────────┘
@@ -67,9 +67,16 @@ Twitch **не поддерживает PKCE** (в документации Autho
 | `media.ts` | медиатека: проверка форматов по сигнатурам, безопасные пути |
 | `server/http.ts` | HTTP API, статика, защита (Host/Origin/CSRF, traversal, CSP) |
 | `server/hub.ts` | WebSocket для overlay и панели |
+| `stream-app.ts` | программа для стрима: OBS Studio / Streamlabs Desktop — определение по User-Agent (`OBS/…`, метка `SLD`), путь к exe, резервная копия сцен |
 | `autostart.ts` | автозапуск через `HKCU\...\Run` |
 
 ## Ключевые решения
+
+**OBS Studio и Streamlabs Desktop.** У Streamlabs тот же движок Browser Source (форк obs-browser): `window.obsstudio`,
+автозапуск звука без клика, User-Agent `… OBS/x.y.z SLD`. Overlay сообщает программу в `hello` (`isObs`, `app`),
+хаб дополнительно смотрит User-Agent. Оповещения получают только overlay в программах для стрима; вкладка браузера —
+предпросмотр и получает оповещения, только если программ нет. Сцены Streamlabs: `%APPDATA%\slobs-client\SceneCollections`
+(`*.json`, `*.json.bak`, `*.json.absolute.bak`), exe — `Streamlabs OBS.exe` (по умолчанию `C:\Program Files\Streamlabs OBS`).
 
 **Дедупликация.** Таблица `seen_messages` (message_id EventSub) и `redemptions` (UNIQUE redemption id).
 Повтор любого из ID — событие игнорируется. Старые записи чистятся через 7 дней.

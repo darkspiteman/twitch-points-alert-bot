@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Db } from './db.ts';
 import { Logger, type ScopedLogger } from './logger.ts';
@@ -14,6 +12,7 @@ import { RedemptionRouter, REDEMPTION_TYPE, REDEMPTION_VERSION } from './router.
 import { Hub } from './server/hub.ts';
 import { Backoff } from './backoff.ts';
 import { MediaFinder } from './find.ts';
+import { STREAM_APPS, backupScenes as copySceneFiles } from './stream-app.ts';
 import { Updater } from './update.ts';
 import type { Transport } from './net/safe-download.ts';
 
@@ -117,7 +116,7 @@ export class App extends EventEmitter {
     this.hub.onOverlayFallback = (itemId, message) => {
       const cur = this.queue.snapshot().current;
       const title = cur && cur.id === itemId ? cur.rewardTitle : 'оповещение';
-      this.journal('warn', 'online', `«${title}»: онлайн-медиа не загрузилось в OBS (${message || 'ошибка'}) — сыграл запасной звук`);
+      this.journal('warn', 'online', `«${title}»: онлайн-медиа не загрузилось в ${STREAM_APPS[this.db.getSettings().streamApp].short} (${message || 'ошибка'}) — сыграл запасной звук`);
     };
     this.hub.onMediaProbe = (mediaId, ok, durationMs, message) => {
       const m = this.db.getMedia(mediaId);
@@ -323,20 +322,12 @@ export class App extends EventEmitter {
     this.hub.broadcastPanel({ type: 'status', status: this.statusSummary() });
   }
 
-  /** Резервная копия коллекций сцен OBS. */
-  backupObs(): string {
+  /** Резервная копия сцен выбранной программы для стрима (OBS Studio или Streamlabs Desktop). */
+  backupScenes(): string {
     const s = this.db.getSettings();
-    const src = path.join(s.obsConfigDir, 'basic', 'scenes');
-    if (!fs.existsSync(src)) throw new Error(`Папка сцен OBS не найдена: ${src}`);
-    const dest = path.join(this.opts.paths.backupDir, new Date().toISOString().replace(/[:.]/g, '-'));
-    fs.mkdirSync(dest, { recursive: true });
-    let n = 0;
-    for (const f of fs.readdirSync(src)) {
-      if (!/\.json(\.bak)?$/i.test(f)) continue;
-      fs.copyFileSync(path.join(src, f), path.join(dest, f)); n++;
-    }
-    this.journal('info', 'obs', `Резервная копия сцен OBS (${n} файлов): ${dest}`);
-    return dest;
+    const { dir, count } = copySceneFiles(s, this.opts.paths.backupDir);
+    this.journal('info', 'obs', `Резервная копия сцен ${STREAM_APPS[s.streamApp].name} (${count} файлов): ${dir}`);
+    return dir;
   }
 
   async stop(): Promise<void> {

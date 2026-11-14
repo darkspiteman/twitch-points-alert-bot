@@ -1,10 +1,14 @@
-// Twitch Alert Bot — OBS overlay.
-// Подключается к боту по WebSocket и автоматически переподключается (в том числе после перезапуска OBS или бота).
+// Twitch Alert Bot — overlay для Browser Source в OBS Studio или Streamlabs Desktop.
+// Подключается к боту по WebSocket и автоматически переподключается (в том числе после перезапуска программы или бота).
 (function () {
   'use strict';
 
   var params = new URLSearchParams(location.search);
-  var isObs = typeof window.obsstudio !== 'undefined';
+  // Streamlabs Desktop работает на том же движке Browser Source, что и OBS: в обоих есть window.obsstudio,
+  // а Streamlabs дополнительно пишет «SLD» в User-Agent.
+  var ua = navigator.userAgent || '';
+  var app = /\bSLD\b|Streamlabs/i.test(ua) ? 'streamlabs' : (typeof window.obsstudio !== 'undefined' || /\bOBS\//i.test(ua)) ? 'obs' : null;
+  var isObs = app !== null; // открыт в программе для стрима, а не в обычном браузере
   var showStatus = params.get('debug') === '1' || !isObs;
   var stage = document.getElementById('stage');
   var statusEl = document.getElementById('status');
@@ -46,7 +50,7 @@
     ws.onopen = function () {
       retryDelay = 1000;
       lastMessageAt = Date.now();
-      send({ type: 'hello', isObs: isObs });
+      send({ type: 'hello', isObs: isObs, app: app });
       setStatus('Подключено к боту', 'ok');
     };
     ws.onmessage = function (ev) {
@@ -227,7 +231,7 @@
       var p = m.play();
       if (p && p.catch) p.catch(function (err) {
         if (state.done) return;
-        if (err && err.name === 'NotAllowedError') fail('браузер запретил автозапуск звука (в OBS этого не происходит)');
+        if (err && err.name === 'NotAllowedError') fail('браузер запретил автозапуск звука (в OBS и Streamlabs этого не происходит)');
         else if (err && err.name !== 'AbortError') fail('не удалось начать воспроизведение: ' + (err.message || err.name));
       });
     });

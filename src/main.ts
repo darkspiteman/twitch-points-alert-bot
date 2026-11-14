@@ -80,7 +80,7 @@ async function main(): Promise<void> {
     server.listen(port, '127.0.0.1', () => resolve());
   });
   fs.writeFileSync(paths.runtimeFile, JSON.stringify({ pid: process.pid, port, startedAt: Date.now() }));
-  log.info(`Панель управления: http://127.0.0.1:${port}/panel/  |  OBS overlay: http://127.0.0.1:${port}/overlay`);
+  log.info(`Панель управления: http://127.0.0.1:${port}/panel/  |  overlay (OBS/Streamlabs): http://127.0.0.1:${port}/overlay`);
 
   await app.start();
 

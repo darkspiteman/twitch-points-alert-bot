@@ -176,12 +176,37 @@
       : e.lastError || (st.auth.status !== 'ok' ? 'Требуется вход в Twitch' : '');
     return v;
   }
+  // Программа для стрима: OBS Studio или Streamlabs Desktop (у обеих одинаковый Browser Source).
+  var APPS = { obs: { name: 'OBS Studio', short: 'OBS' }, streamlabs: { name: 'Streamlabs Desktop', short: 'Streamlabs' } };
+  function streamApp() { return S && S.settings.streamApp === 'streamlabs' ? 'streamlabs' : 'obs'; }
+  function appName() { return APPS[streamApp()].name; }
+  function appShort() { return APPS[streamApp()].short; }
+  /** Overlay подключён из Streamlabs, а в настройках выбран OBS — предложить переключить. */
+  function streamlabsDetected(st) {
+    return streamApp() === 'obs' && st.overlays.some(function (o) { return o.app === 'streamlabs'; });
+  }
+
   function overlayView(st) {
-    var n = st.overlays.length, obs = st.overlays.filter(function (o) { return o.isObs; }).length;
-    if (!n) return { cls: 'bad', text: 'Не подключён', detail: 'Добавьте Browser Source в OBS' };
-    var detail = obs ? 'OBS: ' + obs + (n > obs ? ', браузер: ' + (n - obs) : '') : 'Только предпросмотр в браузере';
-    if (obs > 1) return { cls: 'warn', text: 'Подключено: ' + n, detail: 'Внимание: ' + obs + ' источника OBS — звук может дублироваться' };
-    return { cls: obs ? 'ok' : 'warn', text: 'Подключён', detail: detail };
+    var n = st.overlays.length;
+    var stream = st.overlays.filter(function (o) { return o.isObs; });
+    var sl = stream.filter(function (o) { return o.app === 'streamlabs'; }).length;
+    var obs = stream.length - sl;
+    if (!n) return { cls: 'bad', text: 'Не подключён', detail: 'Добавьте Browser Source в ' + appName() };
+    var parts = [];
+    if (obs) parts.push('OBS: ' + obs);
+    if (sl) parts.push('Streamlabs: ' + sl);
+    if (n > stream.length) parts.push('браузер: ' + (n - stream.length));
+    if (stream.length > 1) return { cls: 'warn', text: 'Подключено: ' + n, detail: 'Внимание: ' + stream.length + ' источника (' + parts.join(', ') + ') — звук может дублироваться' };
+    return { cls: stream.length ? 'ok' : 'warn', text: 'Подключён', detail: stream.length ? parts.join(', ') : 'Только предпросмотр в браузере' };
+  }
+
+  function switchToStreamlabsBox() {
+    return h('div', { class: 'infobox' },
+      h('p', { style: 'margin:0 0 6px' }, h('b', { text: 'Overlay подключён из Streamlabs Desktop. ' }),
+        'Выберите Streamlabs как программу для стрима — тогда кнопка запуска, резервная копия сцен и подсказки будут для Streamlabs.'),
+      h('button', { class: 'small primary', text: 'Выбрать Streamlabs Desktop', onclick: function () {
+        saveSetting('streamApp', 'streamlabs').then(function () { render(); });
+      } }));
   }
 
   function renderSide() {
@@ -212,7 +237,7 @@
     var steps = [
       { done: !!S.settings.clientId, text: 'Укажите Client ID приложения Twitch', go: '#settings' },
       { done: st.auth.status === 'ok', text: 'Войдите через Twitch', go: '#settings' },
-      { done: st.overlays.some(function (o) { return o.isObs; }), text: 'Добавьте Browser Source в OBS', go: '#help' },
+      { done: st.overlays.some(function (o) { return o.isObs; }), text: 'Добавьте Browser Source в ' + appName(), go: '#help' },
       { done: S.rewards.some(function (r) { return r.bot_enabled && (r.media_id || r.sound_id || r.video_id); }), text: 'Назначьте медиафайлы наградам и включите их', go: '#rewards' },
     ];
     if (steps.some(function (s) { return !s.done; })) {
@@ -221,6 +246,7 @@
           return h('li', { class: s.done ? 'done' : '' }, h('span', null, s.text, ' ', s.done ? null : h('a', { href: s.go, text: 'Перейти →' })));
         }))));
     }
+    if (streamlabsDetected(st)) root.appendChild(switchToStreamlabsBox());
 
     var tw = twitchView(st);
     var twActions = st.auth.status === 'ok' ? [] : [h('button', { class: 'primary small', text: 'Войти', onclick: function () { location.hash = '#settings'; } })];
@@ -244,7 +270,7 @@
         onclick: function () { act(post('/api/settings', { audioOnly: !audioOnly }), audioOnly ? 'Видео включено' : 'Теперь все награды — только звук').then(load); },
       })));
     root.appendChild(h('div', { class: 'grid cols-4' },
-      statCard('Twitch', tw, twActions), statCard('EventSub', es, esActions), statCard('OBS overlay', overlayView(st)), modeCard, videoCard));
+      statCard('Twitch', tw, twActions), statCard('EventSub', es, esActions), statCard('Overlay (' + appShort() + ')', overlayView(st)), modeCard, videoCard));
 
   }
 
@@ -393,7 +419,7 @@
     if (!isLocal) badges.push(r.twitch_enabled ? h('span', { class: 'badge ok', text: 'Активна в Twitch' }) : h('span', { class: 'badge warn', text: 'Выключена/на паузе в Twitch' }));
     var enabled = h('input', { type: 'checkbox', checked: !!r.bot_enabled, onchange: function () {
       if (enabled.checked && !r.manageable && !isLocal && S.settings.mode === 'active' &&
-        !confirm('Включить «' + r.title + '» в боте?\n\nЕсли эту награду всё ещё обрабатывает Sound Alerts (его источник есть в OBS), оповещение прозвучит дважды. Сначала уберите или скройте источник Sound Alerts в OBS, либо включите «Режим наблюдения».')) {
+        !confirm('Включить «' + r.title + '» в боте?\n\nЕсли эту награду всё ещё обрабатывает Sound Alerts (его источник есть в ' + appShort() + '), оповещение прозвучит дважды. Сначала уберите или скройте источник Sound Alerts в ' + appShort() + ', либо включите «Режим наблюдения».')) {
         enabled.checked = false; return;
       }
       saveReward(r.id, { bot_enabled: enabled.checked }).then(function () { card.classList.toggle('disabled', !enabled.checked); });
@@ -554,7 +580,7 @@
           m.status_msg ? h('div', { class: 'small', style: 'color:' + (m.status === 'broken' ? '#ff9a9e' : '#ffd38a'), text: m.status_msg }) : null,
           h('div', { class: 'small muted', text: m.usedBy.length ? 'Используется: ' + m.usedBy.join(', ') : 'Не используется' }),
           h('div', { class: 'media-actions' },
-            h('button', { class: 'small primary', text: '▶ В OBS', onclick: function () { act(post('/api/media/' + m.id + '/test'), 'Отправлено в overlay'); } }),
+            h('button', { class: 'small primary', text: '▶ В ' + appShort(), onclick: function () { act(post('/api/media/' + m.id + '/test'), 'Отправлено в overlay'); } }),
             h('button', { class: 'small', text: 'Переименовать', onclick: function () {
               var n = prompt('Новое имя файла:', m.name); if (n) act(post('/api/media/' + m.id + '/rename', { name: n })).then(load);
             } }),
@@ -603,7 +629,7 @@
 
   function addedActions(row) {
     return h('div', { class: 'row small' }, h('span', { class: 'badge ok', text: 'в медиатеке' }),
-      h('button', { class: 'small', text: '▶ В OBS', onclick: function () { act(post('/api/media/' + row.id + '/test'), 'Отправлено в overlay'); } }),
+      h('button', { class: 'small', text: '▶ В ' + appShort(), onclick: function () { act(post('/api/media/' + row.id + '/test'), 'Отправлено в overlay'); } }),
       h('button', { class: 'small primary', text: '＋ Награда', title: 'Создать награду в Twitch с этим файлом', onclick: function () { createRewardWith(row); } }));
   }
 
@@ -928,8 +954,8 @@
         settingField('Client ID приложения Twitch', 'clientId', { hint: 'Создайте приложение на dev.twitch.tv/console (тип клиента — «Общедоступный / Public»). Подробно — в разделе «Помощь».' }),
         settingField('Разрешить боту управлять наградами', 'allowManageRewards', { type: 'check', hint: 'Нужно для создания копий наград и возврата баллов при сбое. Без этого бот только читает события.' }),
         h('div', { id: 'auth-box' })),
-      h('div', { class: 'card' }, h('h2', { text: 'OBS overlay' }),
-        h('div', { class: 'field' }, h('label', { text: 'Адрес для Browser Source в OBS' }),
+      h('div', { class: 'card' }, h('h2', { text: 'Overlay' }),
+        h('div', { class: 'field' }, h('label', { text: 'Адрес для Browser Source (OBS Studio или Streamlabs Desktop)' }),
           h('div', { class: 'copy-field' }, copyInput, h('button', { text: 'Копировать', onclick: function () {
             copyInput.select();
             (navigator.clipboard ? navigator.clipboard.writeText(S.overlayUrl) : Promise.reject()).then(function () { toast('Адрес скопирован', 'ok'); }, function () { document.execCommand('copy'); toast('Адрес скопирован', 'ok'); });
@@ -976,21 +1002,29 @@
         h('p', { class: 'small muted', text: 'Ключи хранятся только на этом компьютере, в журнал не записываются и в панели показываются не полностью.' })),
       h('div', { class: 'card' }, h('h2', { text: 'Как это работает' }),
         h('ul', { class: 'small' },
-          h('li', { text: 'Klipy: мемы не скачиваются (правила Klipy) — во время стрима OBS загружает их с сервера Klipy. Назначьте награде запасной звук на случай сбоя.' }),
+          h('li', { text: 'Klipy: мемы не скачиваются (правила Klipy) — во время стрима OBS или Streamlabs загружает их с сервера Klipy. Назначьте награде запасной звук на случай сбоя.' }),
           h('li', { text: 'Freesound: звуки скачиваются в медиатеку и работают без интернета. Автор и лицензия сохраняются.' }),
           h('li', { text: 'По ссылке: прямой адрес файла скачивается в медиатеку. Ссылки на этот компьютер и локальную сеть запрещены.' })))));
 
     var autostart = h('input', { type: 'checkbox', checked: !!S.autostart, onchange: function () {
       act(post('/api/autostart', { enabled: autostart.checked }), autostart.checked ? 'Автозапуск включён' : 'Автозапуск выключен').then(null, function () { autostart.checked = !autostart.checked; });
     } });
+    var appSel = h('select', null, ['obs', 'streamlabs'].map(function (k) { return h('option', { value: k, text: APPS[k].name, selected: streamApp() === k }); }));
+    appSel.addEventListener('change', function () { saveSetting('streamApp', appSel.value).then(function () { renderSettings(); }); });
+    var isSl = streamApp() === 'streamlabs';
     root.appendChild(h('div', { class: 'grid cols-2' },
-      h('div', { class: 'card' }, h('h2', { text: 'OBS Studio' }),
-        settingField('Путь к OBS (obs64.exe)', 'obsExePath'),
-        settingField('Папка настроек OBS', 'obsConfigDir'),
-        settingField('Запускать OBS при автозапуске бота', 'launchObsWithBot', { type: 'check' }),
+      h('div', { class: 'card' }, h('h2', { text: 'Программа для стрима' }),
+        streamlabsDetected(S.status) ? switchToStreamlabsBox() : null,
+        h('div', { class: 'field' }, h('label', { text: 'Где идёт стрим' }), appSel,
+          h('span', { class: 'hint', text: 'Overlay работает в обеих программах одинаково. Выбор влияет на кнопку запуска, резервную копию сцен и подсказки.' })),
+        isSl ? settingField('Путь к Streamlabs Desktop («Streamlabs OBS.exe»)', 'streamlabsExePath', { hint: 'Оставьте пустым — бот сам найдёт программу в Program Files.' })
+          : settingField('Путь к OBS (obs64.exe)', 'obsExePath'),
+        isSl ? settingField('Папка настроек Streamlabs (slobs-client)', 'streamlabsConfigDir')
+          : settingField('Папка настроек OBS', 'obsConfigDir'),
+        settingField('Запускать ' + appShort() + ' при автозапуске бота', 'launchObsWithBot', { type: 'check' }),
         h('div', { class: 'row' },
-          h('button', { text: 'Резервная копия сцен OBS', onclick: function () { act(post('/api/obs/backup')).then(function (r) { toast('Копия сохранена: ' + r.dir, 'ok'); }); } }),
-          h('button', { text: 'Запустить OBS', onclick: function () { act(post('/api/obs/launch')).then(function (r) { toast(r.already ? 'OBS уже запущен' : 'OBS запускается', 'ok'); }); } }),
+          h('button', { text: 'Резервная копия сцен ' + appShort(), onclick: function () { act(post('/api/obs/backup')).then(function (r) { toast('Копия сохранена: ' + r.dir, 'ok'); }); } }),
+          h('button', { text: 'Запустить ' + appShort(), onclick: function () { act(post('/api/obs/launch')).then(function (r) { toast(r.already ? appName() + ' уже запущен' : appName() + ' запускается', 'ok'); }); } }),
           h('button', { text: 'Папка копий', onclick: function () { act(post('/api/open-folder', { which: 'backups' })); } }))),
       h('div', { class: 'card' }, h('h2', { text: 'Система' }),
         h('label', { class: 'check' }, autostart, 'Запускать бота вместе с Windows'),
@@ -1034,6 +1068,7 @@
   }
 
   // ---------------- Помощь ----------------
+  var helpApp = null; // вкладка инструкции: OBS или Streamlabs (по умолчанию — выбранная программа)
   function renderHelp() {
     var root = clear($('page-help'));
     root.appendChild(h('h1', { text: 'Помощь' }));
@@ -1045,15 +1080,29 @@
         h('li', { text: 'Категория: Broadcaster Suite. Тип клиента: «Общедоступный» (Public).' }),
         h('li', { text: 'Нажмите «Создать», затем «Управление» и скопируйте Client ID (секрет клиента НЕ нужен).' }),
         h('li', { text: 'Вставьте Client ID в «Настройки → Twitch» и нажмите «Войти через Twitch».' }))));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: '2. Источник в OBS' }),
-      h('ol', null,
+    var ha = helpApp || streamApp();
+    var helpTabs = h('div', { class: 'tabs' }, ['obs', 'streamlabs'].map(function (k) {
+      return h('button', { class: ha === k ? 'active' : '', text: APPS[k].name, onclick: function () { helpApp = k; renderHelp(); } });
+    }));
+    var sourceSteps = ha === 'streamlabs' ? h('ol', null,
+      h('li', { text: 'В Streamlabs Desktop: в блоке «Источники» (Sources) нажмите «+» → «Веб-источник» (Browser Source) → «Добавить источник». Название: «Alert Bot».' }),
+      h('li', null, 'Ссылка (URL): ', h('code', { text: S.overlayUrl })),
+      h('li', { text: 'Ширина 1920, высота 1080 (источник растянется на весь экран; при другом разрешении он масштабируется сам).' }),
+      h('li', { text: 'Включите «Управление аудио через Streamlabs Desktop» (Control audio via Streamlabs Desktop) — звук оповещений появится в «Микшере» и попадёт в эфир. Выключите «Отключать источник, когда не видим» — иначе оповещения ждут, пока сцена неактивна.' }),
+      h('li', { text: 'Чтобы слышать оповещения в наушниках: «Микшер» → шестерёнка → «Дополнительные настройки звука» → у «Alert Bot» в столбце «Мониторинг звука» выберите «Мониторинг и вывод звука».' }),
+      h('li', { text: 'Добавьте ОДИН источник. В других сценах: «+» → «Веб-источник» → «Добавить существующий источник» → «Alert Bot» — иначе звук будет двоиться.' }),
+      h('li', { text: 'В «Настройки → Программа для стрима» выберите «Streamlabs Desktop» (для кнопки запуска и резервной копии сцен).' }),
+      h('li', { text: 'Нажмите «Тестовое оповещение» на главной. Звук играет сам, без кликов — как и в OBS.' }))
+      : h('ol', null,
         h('li', { text: 'В OBS: «Источники» → «+» → «Браузер». Название: «Alert Bot».' }),
         h('li', null, 'URL: ', h('code', { text: S.overlayUrl })),
         h('li', { text: 'Ширина 1920, высота 1080 (источник растянется на весь экран; при другом разрешении он масштабируется сам).' }),
         h('li', { text: 'Включите «Управлять аудио через OBS». Выключите «Отключать источник, когда он не виден» — иначе оповещения ждут, пока сцена неактивна.' }),
         h('li', { text: 'Чтобы слышать оповещения в наушниках: «Расширенные свойства аудио» → «Мониторинг звука» → «Монитор и вывод».' }),
         h('li', { text: 'Добавьте ОДИН источник и используйте его во всех сценах через «Добавить существующий» — иначе звук будет двоиться.' }),
-        h('li', { text: 'Нажмите «Тестовое оповещение» на главной.' }))));
+        h('li', { text: 'Нажмите «Тестовое оповещение» на главной.' }));
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: '2. Источник в программе для стрима' }), helpTabs, sourceSteps,
+      h('p', { class: 'small muted', style: 'margin:0', text: 'Не держите источник одновременно в OBS и в Streamlabs: если обе программы открыты, оповещение прозвучит дважды.' })));
     root.appendChild(h('div', { class: 'card' }, h('h2', { text: '3. Как добавить новую награду' }),
       h('ol', null,
         h('li', null, h('b', { text: 'Подготовьте файлы. ' }), 'Раздел «Медиа» → перетащите звук (MP3, WAV, OGG, M4A) и, если нужно, видео (MP4 H.264 или WebM), GIF или картинку. Бот проверит каждый файл.'),
@@ -1061,7 +1110,7 @@
         h('li', null, h('b', { text: 'Назначьте файлы. ' }), 'В карточке награды выберите «Звук (основной файл)» и при желании «Видео / GIF / картинка». Для ролика на зелёном фоне поставьте галочку «Убрать зелёный фон».'),
         h('li', null, h('b', { text: 'Выберите режим. ' }), '«🎬 С видео» — показывается видео со своим звуком; «🔊 Только звук» — играет только звук. Здесь же громкость, длительность (0 — до конца файла), задержка и антиспам.'),
         h('li', null, h('b', { text: 'Включите. ' }), 'Отметьте «Включена в боте».'),
-        h('li', null, h('b', { text: 'Проверьте. ' }), 'Кнопка «▶ Тест» проигрывает оповещение в OBS без списания баллов. Учтите: во время эфира тест видят и слышат зрители.'),
+        h('li', null, h('b', { text: 'Проверьте. ' }), 'Кнопка «▶ Тест» проигрывает оповещение в OBS или Streamlabs без списания баллов. Учтите: во время эфира тест видят и слышат зрители.'),
         h('li', null, h('b', { text: 'Значок (по желанию). ' }), 'Twitch не даёт ботам загружать картинки — значок ставится вручную: ', h('a', { href: 'https://dashboard.twitch.tv', target: '_blank', rel: 'noopener noreferrer', text: 'панель автора Twitch' }), ' → «Награды для зрителей» → «Баллы канала» → «Управление наградами» → награда → «Изображение награды». Нужен PNG 112×112 с прозрачным фоном, не больше ~25 КБ.')),
       h('div', { class: 'infobox', style: 'margin-top:8px' },
         h('p', { style: 'margin:0 0 6px' }, h('b', { text: 'Награда создана на сайте Twitch, а не в боте? ' }), 'Нажмите «Обновить из Twitch» — бот увидит её и сможет проигрывать. Но менять её из панели и возвращать зрителям баллы при сбое он не сможет: для этого нажмите у неё «Создать свою копию в Twitch…», удалите оригинал на сайте Twitch, затем у копии — «Переименовать…» и «Снять с паузы в Twitch».'),
@@ -1071,14 +1120,14 @@
         h('li', null, h('b', { text: 'Ключи (один раз). ' }), 'Klipy — ', h('a', { href: 'https://partner.klipy.com', target: '_blank', rel: 'noopener noreferrer', text: 'partner.klipy.com' }), ' → API Keys; Freesound — ',
           h('a', { href: 'https://freesound.org/apiv2/apply', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org/apiv2/apply' }), '. Вставьте их в «Настройки» → «Поиск медиа».'),
         h('li', null, h('b', { text: 'Найдите. ' }), '«Найти медиа» → Klipy (клипы со звуком, GIF, стикеры) или Freesound (звуки). Лучше искать по-английски.'),
-        h('li', null, h('b', { text: 'Добавьте. ' }), '«＋ В медиатеку», затем «▶ В OBS» для проверки или «＋ Награда» — бот создаст награду в Twitch с этим файлом.'),
+        h('li', null, h('b', { text: 'Добавьте. ' }), '«＋ В медиатеку», затем «▶ В ' + appShort() + '» для проверки или «＋ Награда» — бот создаст награду в Twitch с этим файлом.'),
         h('li', null, h('b', { text: 'Запасной звук. ' }), 'Мемы Klipy не скачиваются (правила Klipy) — они загружаются с сервера Klipy во время показа. Выберите награде «Звук (основной файл)»: он сыграет, если Klipy или интернет недоступны.')),
       h('p', { class: 'small muted', style: 'margin:0', text: 'Звуки Freesound скачиваются и работают без интернета; автора звуков с лицензией CC BY нужно указывать (например, в описании канала) — он записан у файла в «Медиа».' })));
     root.appendChild(h('div', { class: 'card' }, h('h2', { text: '5. Переход с Sound Alerts (или другого сервиса)' }),
       h('ol', null,
         h('li', { text: 'Загрузите звуки/видео в раздел «Медиа» и назначьте их наградам.' }),
         h('li', { text: 'Включите «Режим наблюдения» и проверьте во время стрима, что все активации видны в журнале.' }),
-        h('li', { text: 'Скройте (значок глаза) источники Sound Alerts во всех сценах OBS, включите нужные награды в боте и «Активный режим».' }),
+        h('li', { text: 'Скройте (значок глаза) источники Sound Alerts во всех сценах ' + appShort() + ', включите нужные награды в боте и «Активный режим».' }),
         h('li', { text: 'По желанию — создайте собственные копии наград (кнопка у награды). Старые награды Sound Alerts удаляйте только после успешной проверки.' }))));
     root.appendChild(h('div', { class: 'card' }, h('h2', { text: '6. Переход с TriggerFyre' }),
       h('p', { class: 'muted', style: 'margin-top:0' }, 'Полная инструкция с таблицей настроек: ',
@@ -1089,9 +1138,9 @@
         h('li', null, h('b', { text: 'Перепишите триггеры. ' }), 'В TriggerFyre для каждого триггера запишите Reward name, файл, громкость, длительность, задержку и кулдаун (удобно сделать скриншоты).'),
         h('li', null, h('b', { text: 'Сохраните файлы. ' }), 'Возьмите исходные картинки, видео и звуки или сохраните их со страницы TriggerFyre (правой кнопкой → «Сохранить как…»).'),
         h('li', null, h('b', { text: 'Загрузите и привяжите. ' }), '«Медиа» → перетащите файлы. «Награды» → «Обновить из Twitch»: награды TriggerFyre появятся с меткой «Другое приложение» — это нормально. Назначьте файлы, громкость, длительность, задержку, антиспам и отметьте «Включена в боте».'),
-        h('li', null, h('b', { text: 'Положение и размер. ' }), '«Настройки» → «OBS overlay» — они общие для всех наград.'),
+        h('li', null, h('b', { text: 'Положение и размер. ' }), '«Настройки» → «Overlay» — они общие для всех наград.'),
         h('li', null, h('b', { text: 'Проверьте. ' }), 'Вне эфира нажмите «▶ Тест» у каждой награды. Проведите один стрим в режиме наблюдения и убедитесь, что все активации есть в «Последних активациях наград».'),
-        h('li', null, h('b', { text: 'Переключитесь. ' }), 'В OBS скройте (значок глаза) источник TriggerFyre во всех сценах, затем в боте — «Включить воспроизведение». Откат: «Включить наблюдение» и снова показать источник TriggerFyre.'),
+        h('li', null, h('b', { text: 'Переключитесь. ' }), 'В ' + appShort() + ' скройте (значок глаза) источник TriggerFyre во всех сценах, затем в боте — «Включить воспроизведение». Откат: «Включить наблюдение» и снова показать источник TriggerFyre.'),
         h('li', null, h('b', { text: 'Отключите TriggerFyre ' }), '(после 2–3 удачных стримов): удалите его источник из OBS и отключите доступ в twitch.tv → «Настройки» → «Подключения».')),
       h('div', { class: 'infobox', style: 'margin-top:8px' },
         h('p', { style: 'margin:0' }, h('b', { text: 'Чего нет в боте: ' }), 'чат-команд, действий в OBS (смена сцены, показ источника, фильтры), случайного выбора файла и «% шанса», лимита срабатываний, своего положения для каждой награды. Бот работает только с наградами за баллы канала.'))));
