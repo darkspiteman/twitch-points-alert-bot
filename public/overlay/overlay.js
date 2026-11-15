@@ -21,14 +21,26 @@
   var current = null; // { id, root, media: [], timers: [], done }
   var audioUnlocked = isObs;
 
-  function setStatus(text, cls) {
+  // Служебный текст (виден только в обычном браузере, не в OBS/Streamlabs) — на языке панели.
+  // Язык приходит от бота в view.lang; до подключения — тот, что запомнила панель (тот же адрес — общее хранилище).
+  // Сообщения об ошибках воспроизведения уходят боту по-русски: он хранит их и сам переводит для панели.
+  var TEXT = {
+    ru: { connecting: 'Подключение к боту…', connected: 'Подключено к боту', lost: 'Нет связи с ботом — переподключение…', unmute: 'Включить звук' },
+    en: { connecting: 'Connecting to the bot…', connected: 'Connected to the bot', lost: 'No connection to the bot — reconnecting…', unmute: 'Enable sound' },
+  };
+  var lang = 'ru';
+  try { if (localStorage.getItem('tab-lang') === 'en') lang = 'en'; } catch (e) { /* нет доступа к хранилищу */ }
+  var lastStatus = null;
+
+  function setStatus(key, cls) {
+    lastStatus = { key: key, cls: cls };
     if (!showStatus) return;
     statusEl.hidden = false;
     statusEl.className = cls || '';
-    statusEl.textContent = text;
+    statusEl.textContent = TEXT[lang][key];
     if (!audioUnlocked) {
       var b = document.createElement('button');
-      b.textContent = 'Включить звук';
+      b.textContent = TEXT[lang].unmute;
       b.addEventListener('click', function () { audioUnlocked = true; b.remove(); });
       statusEl.appendChild(b);
     }
@@ -48,12 +60,12 @@
       scheduleReconnect();
       return;
     }
-    setStatus('Подключение к боту…');
+    setStatus('connecting');
     ws.onopen = function () {
       retryDelay = 1000;
       lastMessageAt = Date.now();
       send({ type: 'hello', isObs: isObs, app: app, via: via });
-      setStatus('Подключено к боту', 'ok');
+      setStatus('connected', 'ok');
     };
     ws.onmessage = function (ev) {
       lastMessageAt = Date.now();
@@ -62,7 +74,7 @@
       handle(msg);
     };
     ws.onclose = function () {
-      setStatus('Нет связи с ботом — переподключение…', 'bad');
+      setStatus('lost', 'bad');
       ws = null;
       // Текущее оповещение прерываем: бот сам решит, что делать дальше.
       if (current) finish(current, null, true);
@@ -86,6 +98,11 @@
 
   function applyView(view) {
     if (!view) return;
+    if ((view.lang === 'en' || view.lang === 'ru') && view.lang !== lang) {
+      lang = view.lang;
+      document.documentElement.lang = lang;
+      if (lastStatus) setStatus(lastStatus.key, lastStatus.cls);
+    }
     stage.className = 'pos-' + (view.position || 'center');
     stage.style.setProperty('--max-w', (view.maxWidthPct || 60) + 'vw');
     stage.style.setProperty('--max-h', (view.maxHeightPct || 60) + 'vh');

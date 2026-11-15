@@ -6,7 +6,8 @@ import type { App } from '../app.ts';
 import { PUBLIC_DIR, validateSettingsPatch, publicSettings, SUPPORT_LINKS } from '../config.ts';
 import { FindError, KLIPY_TYPES, type KlipyType } from '../find.ts';
 import { HelixError } from '../twitch/helix.ts';
-import { MAX_UPLOAD_BYTES, isRemote } from '../media.ts';
+import { MAX_UPLOAD_BYTES, isRemote, mediaFlags } from '../media.ts';
+import { localize, tr } from '../i18n.ts';
 import { getAutostart, setAutostart } from '../autostart.ts';
 import { STREAM_APPS, resolveExe } from '../stream-app.ts';
 
@@ -41,6 +42,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       twitch: s.auth.status, eventsub: s.eventsub.state, overlays: s.overlays.length, obsOverlays: s.overlays.filter((o) => o.isObs).length, mode: s.mode,
       streamApp: app.db.getSettings().streamApp, streamlabsOverlays: s.overlays.filter((o) => o.app === 'streamlabs').length,
       viaFileOverlays: s.overlays.filter((o) => o.isObs && o.viaFile).length,
+      language: app.lang,
     };
   });
 
@@ -53,7 +55,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     changelog: app.updater.localChangelog(),
     queue: app.queue.snapshot(),
     rewards: app.db.listRewards(),
-    media: app.db.listMedia().map((m) => ({ ...m, usedBy: app.db.mediaUsage(m.id).map((r) => r.title) })),
+    media: app.db.listMedia().map((m) => ({ ...m, ...mediaFlags(m), usedBy: app.db.mediaUsage(m.id).map((r) => r.title) })),
     redemptions: app.db.recentRedemptions(50),
     events: app.db.recentEvents(100),
     autostart: await getAutostart().catch(() => false),
@@ -88,6 +90,16 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     }
     if (ok.allowManageRewards !== undefined && ok.allowManageRewards !== before.allowManageRewards && app.auth.state.status === 'ok') note = 'Права изменены — войдите в Twitch заново, чтобы применить.';
     if (ok.port !== undefined && ok.port !== before.port) note = 'Новый порт начнёт работать после перезапуска бота. Не забудьте изменить адрес в Browser Source (OBS или Streamlabs).';
+    if (ok.language !== undefined && ok.language !== before.language) {
+      note = ok.language === 'en' ? 'Язык панели: английский' : 'Язык панели: русский';
+      app.refreshLoader();
+      // Язык для меню лаунчера в трее (он читает runtime.json до первого ответа /api/health).
+      try {
+        const rt = JSON.parse(fs.readFileSync(app.opts.paths.runtimeFile, 'utf8')) as Record<string, unknown>;
+        fs.writeFileSync(app.opts.paths.runtimeFile, JSON.stringify({ ...rt, language: app.lang }));
+      } catch { /* бот запущен без runtime.json (тесты) */ }
+      app.hub.broadcastPanel({ type: 'invalidate', what: 'language' }); // другие открытые панели тоже переключатся
+    }
     if (ok.mode !== undefined) app.journal('info', 'settings', after.mode === 'observe' ? 'Включён режим наблюдения: оповещения не воспроизводятся' : 'Включён активный режим: оповещения воспроизводятся');
     if (ok.klipyApiKey !== undefined || ok.freesoundApiKey !== undefined) {
       app.finder.registerKeys();
@@ -351,7 +363,8 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
           if (raw.length) { try { body = JSON.parse(raw.toString('utf8')); } catch { throw new HttpError(400, 'Неверный JSON'); } }
         }
         const result = await route.handler(req, res, params, body);
-        if (!res.headersSent) sendJson(res, 200, result ?? { ok: true });
+        // Сообщения сервера — на языке панели (внутри бота они хранятся по-русски).
+        if (!res.headersSent) sendJson(res, 200, localize(result ?? { ok: true }, app.lang));
         return;
       }
       if (method !== 'GET' && method !== 'HEAD') throw new HttpError(405, 'Метод не поддерживается');
@@ -367,7 +380,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       const status = e instanceof HttpError ? e.status : e instanceof HelixError ? 502 : 500;
       const message = (e as Error).message || 'Внутренняя ошибка';
       if (status >= 500) app.log.error(`HTTP ${req.method} ${req.url}: ${(e as Error).message}`);
-      if (!res.headersSent) sendJson(res, status, { error: message });
+      if (!res.headersSent) sendJson(res, status, { error: tr(message, app.lang) });
       else res.end();
     }
   });

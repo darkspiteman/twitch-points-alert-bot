@@ -58,6 +58,35 @@ namespace TwitchAlertBot
         Icon iconGreen, iconYellow, iconRed, iconGray;
         SynchronizationContext ui;
         int downCount;
+        // Язык меню и подсказок — как в панели бота (поле language в /api/health и runtime.json).
+        bool en = ReadLanguage() == "en";
+        ToolStripMenuItem miOpen, miCopy, miRestart, miLogs, miExit;
+
+        string L(string ru, string english) { return en ? english : ru; }
+
+        public static string ReadLanguage()
+        {
+            try
+            {
+                string f = Path.Combine(DataDir(), "runtime.json");
+                if (File.Exists(f))
+                {
+                    var m = Regex.Match(File.ReadAllText(f), "\"language\"\\s*:\\s*\"(\\w+)\"");
+                    if (m.Success) return m.Groups[1].Value;
+                }
+            }
+            catch { }
+            return "ru";
+        }
+
+        void ApplyMenuLanguage()
+        {
+            miOpen.Text = L("Открыть панель управления", "Open control panel");
+            miCopy.Text = L("Скопировать адрес overlay (OBS / Streamlabs)", "Copy overlay address (OBS / Streamlabs)");
+            miRestart.Text = L("Перезапустить бота", "Restart the bot");
+            miLogs.Text = L("Открыть папку логов", "Open logs folder");
+            miExit.Text = L("Выход", "Exit");
+        }
 
         public TrayApp(bool autostart)
         {
@@ -68,21 +97,26 @@ namespace TwitchAlertBot
             iconGray = MakeIcon(Color.FromArgb(145, 71, 255));
 
             var menu = new ContextMenuStrip();
-            var open = new ToolStripMenuItem("Открыть панель управления", null, delegate { OpenPanel(); });
-            open.Font = new Font(open.Font, FontStyle.Bold);
-            menu.Items.Add(open);
-            menu.Items.Add(new ToolStripMenuItem("Скопировать адрес overlay (OBS / Streamlabs)", null, delegate { CopyOverlayUrl(); }));
+            miOpen = new ToolStripMenuItem("", null, delegate { OpenPanel(); });
+            miOpen.Font = new Font(miOpen.Font, FontStyle.Bold);
+            menu.Items.Add(miOpen);
+            miCopy = new ToolStripMenuItem("", null, delegate { CopyOverlayUrl(); });
+            menu.Items.Add(miCopy);
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("Перезапустить бота", null, delegate { RestartBot(); }));
-            menu.Items.Add(new ToolStripMenuItem("Открыть папку логов", null, delegate { OpenFolder(Path.Combine(DataDir(), "logs")); }));
+            miRestart = new ToolStripMenuItem("", null, delegate { RestartBot(); });
+            menu.Items.Add(miRestart);
+            miLogs = new ToolStripMenuItem("", null, delegate { OpenFolder(Path.Combine(DataDir(), "logs")); });
+            menu.Items.Add(miLogs);
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("Выход", null, delegate { ExitApp(); }));
+            miExit = new ToolStripMenuItem("", null, delegate { ExitApp(); });
+            menu.Items.Add(miExit);
+            ApplyMenuLanguage();
 
             tray.ContextMenuStrip = menu;
             var handle = menu.Handle; // создаёт окно → устанавливается WindowsFormsSynchronizationContext
             ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             tray.Icon = iconGray;
-            tray.Text = "Twitch Alert Bot: запуск…";
+            tray.Text = L("Twitch Alert Bot: запуск…", "Twitch Alert Bot: starting…");
             tray.Visible = true;
             tray.DoubleClick += delegate { OpenPanel(); };
 
@@ -144,7 +178,7 @@ namespace TwitchAlertBot
             }
             catch (Exception e)
             {
-                ShowBalloon("Не удалось запустить бота", e.Message + "\nПроверьте, что установлен Node.js (запустите install.cmd).", ToolTipIcon.Error);
+                ShowBalloon(L("Не удалось запустить бота", "Couldn't start the bot"), e.Message + L("\nПроверьте, что установлен Node.js (запустите install.cmd).", "\nMake sure Node.js is installed (run install.cmd)."), ToolTipIcon.Error);
             }
         }
 
@@ -165,7 +199,7 @@ namespace TwitchAlertBot
                 restartDelay = 2000;
                 BeginInvokeUi(delegate
                 {
-                    ShowBalloon("Twitch Alert Bot", "Обновление установлено, бот перезапускается", ToolTipIcon.Info);
+                    ShowBalloon("Twitch Alert Bot", L("Обновление установлено, бот перезапускается", "Update installed, the bot is restarting"), ToolTipIcon.Info);
                     StartBot();
                 });
                 return;
@@ -182,7 +216,7 @@ namespace TwitchAlertBot
             restartDelay = Math.Min(restartDelay * 2, 60000);
             BeginInvokeUi(delegate
             {
-                ShowBalloon("Бот аварийно завершился", "Перезапуск через " + (delay / 1000) + " с. Подробности — в логах.", ToolTipIcon.Warning);
+                ShowBalloon(L("Бот аварийно завершился", "The bot crashed"), L("Перезапуск через " + (delay / 1000) + " с. Подробности — в логах.", "Restarting in " + (delay / 1000) + " s. Details are in the logs."), ToolTipIcon.Warning);
                 var t = new System.Windows.Forms.Timer();
                 t.Interval = delay;
                 t.Tick += delegate { t.Stop(); t.Dispose(); StartBot(); };
@@ -227,7 +261,7 @@ namespace TwitchAlertBot
             restartDelay = 2000;
             StartBot();
             healthTimer.Start();
-            ShowBalloon("Twitch Alert Bot", "Бот перезапущен", ToolTipIcon.Info);
+            ShowBalloon("Twitch Alert Bot", L("Бот перезапущен", "The bot was restarted"), ToolTipIcon.Info);
         }
 
         void ExitApp()
@@ -235,7 +269,7 @@ namespace TwitchAlertBot
             if (exiting) return;
             exiting = true;
             healthTimer.Stop();
-            tray.Text = "Twitch Alert Bot: остановка…";
+            tray.Text = L("Twitch Alert Bot: остановка…", "Twitch Alert Bot: stopping…");
             if (!attached) StopBot(8000);
             tray.Visible = false;
             tray.Dispose();
@@ -254,13 +288,15 @@ namespace TwitchAlertBot
                 if (exiting) return;
                 if (ev.Error != null || ev.Cancelled)
                 {
-                    SetState("down", "бот не отвечает");
+                    SetState("down", L("бот не отвечает", "bot not responding"));
                     // Бот был запущен не нами и пропал — запускаем свой экземпляр.
                     if (attached && ++downCount >= 3) { downCount = 0; StartBot(); }
                     return;
                 }
                 downCount = 0;
                 string j = ev.Result;
+                bool nowEn = j.Contains("\"language\":\"en\"");
+                if (nowEn != en) { en = nowEn; ApplyMenuLanguage(); }
                 bool tw = j.Contains("\"twitch\":\"ok\"");
                 bool es = j.Contains("\"eventsub\":\"connected\"");
                 var m = Regex.Match(j, "\"obsOverlays\":(\\d+)");
@@ -268,7 +304,7 @@ namespace TwitchAlertBot
                 bool observe = j.Contains("\"mode\":\"observe\"");
                 // Программа для стрима, выбранная в настройках бота: OBS Studio или Streamlabs Desktop.
                 string appLabel = j.Contains("\"streamApp\":\"streamlabs\"") ? "Streamlabs" : "OBS";
-                string text = "Twitch " + (tw ? "✓" : "✗") + "  EventSub " + (es ? "✓" : "✗") + "  " + appLabel + " " + (obs > 0 ? "✓" : "✗") + (observe ? "  (наблюдение)" : "");
+                string text = "Twitch " + (tw ? "✓" : "✗") + "  EventSub " + (es ? "✓" : "✗") + "  " + appLabel + " " + (obs > 0 ? "✓" : "✗") + (observe ? L("  (наблюдение)", "  (observe)") : "");
                 SetState(tw && es && obs > 0 ? "ok" : "partial", text);
                 if (!openedPanel)
                 {
@@ -277,7 +313,7 @@ namespace TwitchAlertBot
                 }
             };
             try { wc.DownloadStringAsync(new Uri("http://127.0.0.1:" + port + "/api/health")); }
-            catch { SetState("down", "бот не отвечает"); }
+            catch { SetState("down", L("бот не отвечает", "bot not responding")); }
         }
 
         void SetState(string state, string text)
@@ -288,8 +324,8 @@ namespace TwitchAlertBot
             string prev = lastState;
             lastState = state;
             tray.Icon = state == "ok" ? iconGreen : state == "partial" ? iconYellow : iconRed;
-            if (prev == "ok" && state != "ok") ShowBalloon("Twitch Alert Bot", "Проблема с подключением: " + text, ToolTipIcon.Warning);
-            else if (prev != "" && prev != "ok" && state == "ok") ShowBalloon("Twitch Alert Bot", "Всё подключено", ToolTipIcon.Info);
+            if (prev == "ok" && state != "ok") ShowBalloon("Twitch Alert Bot", L("Проблема с подключением: ", "Connection problem: ") + text, ToolTipIcon.Warning);
+            else if (prev != "" && prev != "ok" && state == "ok") ShowBalloon("Twitch Alert Bot", L("Всё подключено", "Everything is connected"), ToolTipIcon.Info);
         }
 
         // ---------------- действия ----------------
@@ -298,7 +334,7 @@ namespace TwitchAlertBot
         void CopyOverlayUrl()
         {
             string url = "http://127.0.0.1:" + ReadPort() + "/overlay";
-            try { Clipboard.SetText(url); ShowBalloon("Адрес скопирован", url + "\nВставьте его в Browser Source в OBS или Streamlabs.", ToolTipIcon.Info); } catch { }
+            try { Clipboard.SetText(url); ShowBalloon(L("Адрес скопирован", "Address copied"), url + L("\nВставьте его в Browser Source в OBS или Streamlabs.", "\nPaste it into a Browser Source in OBS or Streamlabs."), ToolTipIcon.Info); } catch { }
         }
 
         public static void OpenUrl(string url)

@@ -6,6 +6,7 @@ import type { PlaybackQueue, PlayItem, MediaRef, ItemResult } from './queue.ts';
 import type { EventSubMessage } from './twitch/eventsub.ts';
 import type { HelixClient } from './twitch/helix.ts';
 import type { ScopedLogger } from './logger.ts';
+import { tr, effectiveLang } from './i18n.ts';
 
 export const REDEMPTION_TYPE = 'channel.channel_points_custom_reward_redemption.add';
 export const REDEMPTION_VERSION = '1';
@@ -146,11 +147,14 @@ export class RedemptionRouter extends EventEmitter {
     return rows.length > 0;
   }
 
+  /** Текст тестовых оповещений (видят стример и зрители) — на языке панели. */
+  private t(text: string): string { return tr(text, effectiveLang(this.d.db.getSettings().language)); }
+
   /** Тест награды без Twitch и без списания баллов. Игнорирует режим наблюдения и антиспам. */
   test(rewardId: string): { ok: boolean; error?: string } {
     const reward = this.d.db.getReward(rewardId);
     if (!reward) return { ok: false, error: 'Награда не найдена' };
-    const built = this.buildItem(reward, { id: `test-${crypto.randomUUID()}`, userName: 'Тест', userInput: '', source: 'test' });
+    const built = this.buildItem(reward, { id: `test-${crypto.randomUUID()}`, userName: this.t('Тест'), userInput: '', source: 'test' });
     if ('error' in built) return { ok: false, error: built.error };
     built.item.redemptionId = null;
     const r = this.d.queue.enqueue(built.item);
@@ -162,10 +166,10 @@ export class RedemptionRouter extends EventEmitter {
   /** Встроенный тест overlay: картинка + звук, без медиатеки и без Twitch. */
   testBuiltin(): { ok: boolean; error?: string } {
     const item: PlayItem = {
-      id: `test-${crypto.randomUUID()}`, redemptionId: null, rewardId: '', rewardTitle: 'Встроенный тест', userName: 'Тест', userInput: '',
-      visual: { id: 'builtin-svg', url: '/overlay/test-alert.svg', kind: 'image', mime: 'image/svg+xml' },
+      id: `test-${crypto.randomUUID()}`, redemptionId: null, rewardId: '', rewardTitle: this.t('Встроенный тест'), userName: this.t('Тест'), userInput: '',
+      visual: { id: 'builtin-svg', url: effectiveLang(this.d.db.getSettings().language) === 'en' ? '/overlay/test-alert-en.svg' : '/overlay/test-alert.svg', kind: 'image', mime: 'image/svg+xml' },
       audio: { id: 'builtin-wav', url: '/overlay/test-chime.wav', kind: 'audio', mime: 'audio/wav' },
-      volume: 1, durationMs: 3000, delayMs: 0, caption: 'Тест: оверлей работает!', source: 'test', createdAt: Date.now(),
+      volume: 1, durationMs: 3000, delayMs: 0, caption: this.t('Тест: оверлей работает!'), source: 'test', createdAt: Date.now(),
     };
     const r = this.d.queue.enqueue(item);
     if (r.ok) this.d.journal('info', 'test', 'Встроенный тест оповещения');
@@ -177,7 +181,7 @@ export class RedemptionRouter extends EventEmitter {
     const ref = this.ref(media);
     if (!ref) return { ok: false, error: unplayable(media) };
     const item: PlayItem = {
-      id: `test-${crypto.randomUUID()}`, redemptionId: null, rewardId: '', rewardTitle: `Файл: ${media.name}`, userName: 'Тест', userInput: '',
+      id: `test-${crypto.randomUUID()}`, redemptionId: null, rewardId: '', rewardTitle: this.t(`Файл: ${media.name}`), userName: this.t('Тест'), userInput: '',
       visual: media.kind === 'audio' ? null : ref, audio: media.kind === 'audio' ? ref : null, volume: volume / 100, durationMs: 0, delayMs: 0,
       caption: null, source: 'test', createdAt: Date.now(),
     };

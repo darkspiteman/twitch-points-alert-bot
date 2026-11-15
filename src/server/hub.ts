@@ -22,6 +22,8 @@ export interface OverlayView {
   maxHeightPct: number;
   masterVolume: number; // 0..100
   maxDurationMs: number;
+  /** Язык служебного текста overlay ('ru' | 'en'). */
+  lang: string;
 }
 
 /**
@@ -43,6 +45,8 @@ export class Hub implements OverlayTransport {
   onOverlayConnected: (info: OverlayInfo) => void = () => {};
   onOverlayDisconnected: (id: string) => void = () => {};
   onMediaProbe: (mediaId: string, ok: boolean, durationMs: number, message: string) => void = () => {};
+  /** Перевод сообщений для панели (язык из настроек). */
+  panelTransform: (msg: unknown) => unknown = (m) => m;
   /** Overlay не смог загрузить онлайн-медиа и сыграл запасной звук. */
   onOverlayFallback: (itemId: string, message: string) => void = () => {};
 
@@ -176,7 +180,9 @@ export class Hub implements OverlayTransport {
 
   /** Сообщение всем открытым панелям. */
   broadcastPanel(msg: unknown): void {
-    for (const p of this.panels) this.send(p, msg);
+    if (!this.panels.size) return;
+    const out = this.panelTransform(msg);
+    for (const p of this.panels) this.send(p, out);
   }
 
   async close(): Promise<void> {

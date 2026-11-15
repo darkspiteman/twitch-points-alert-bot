@@ -204,6 +204,21 @@ export class MediaLibrary {
   }
 }
 
+/**
+ * Признаки состояния файла для панели. Вычисляются по русскому тексту в базе, чтобы панель не зависела
+ * от языка сообщения: fileProblem — файл отсутствует/повреждён (а не «не воспроизводится»), panelCantRead — даже
+ * браузер панели не читает файл (перекодировать в панели нельзя), videoCodec — название видеокодека из предупреждения.
+ */
+export function mediaFlags(m: { status: string; status_msg: string }): { fileProblem: boolean; panelCantRead: boolean; videoCodec: string } {
+  const msg = m.status_msg || '';
+  const codec = /видео в кодеке ([^—,]+?)(?: —| и звук|,|$)/.exec(msg);
+  return {
+    fileProblem: /^Файл/.test(msg),
+    panelCantRead: /^Браузер не может|Браузер панели тоже/.test(msg),
+    videoCodec: codec ? codec[1].trim() : '',
+  };
+}
+
 /** Сообщение о кодеке (предупреждение при загрузке или ошибка воспроизведения) — его снимает повторная проверка. */
 export function isCodecMessage(msg: string): boolean {
   return /^В файле .*(кодеке|формате)|H\.265\/HEVC|Видео в кодеке/.test(msg);

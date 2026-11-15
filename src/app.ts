@@ -17,6 +17,7 @@ import { isCodecMessage } from './media.ts';
 import { Updater } from './update.ts';
 import { writeLoader } from './overlay-loader.ts';
 import type { Transport } from './net/safe-download.ts';
+import { type Lang, effectiveLang, localize } from './i18n.ts';
 
 export interface AppOptions {
   paths: Paths;
@@ -84,7 +85,7 @@ export class App extends EventEmitter {
 
     this.hub = new Hub(opts.logger.child('hub'), () => {
       const s = this.db.getSettings();
-      return { position: s.overlayPosition, maxWidthPct: s.overlayMaxWidthPct, maxHeightPct: s.overlayMaxHeightPct, masterVolume: s.masterVolume, maxDurationMs: s.maxDurationMs };
+      return { position: s.overlayPosition, maxWidthPct: s.overlayMaxWidthPct, maxHeightPct: s.overlayMaxHeightPct, masterVolume: s.masterVolume, maxDurationMs: s.maxDurationMs, lang: effectiveLang(s.language) };
     }, () => [`http://127.0.0.1:${this.port}`, `http://localhost:${this.port}`]);
 
     this.finder = new MediaFinder({
@@ -113,7 +114,16 @@ export class App extends EventEmitter {
     this.wire();
   }
 
+  /** Файл-загрузчик overlay: пишется при запуске и при смене языка (служебный текст на языке панели). */
+  refreshLoader(): void {
+    try { this.loaderPath = writeLoader(this.opts.paths.dataDir, this.port, this.lang); } catch (e) { this.log.warn('Не удалось записать файл-загрузчик overlay', e); }
+  }
+
+  /** Язык панели и служебных сообщений (из настроек; не выбран — русский). */
+  get lang(): Lang { return effectiveLang(this.db.getSettings().language); }
+
   private wire(): void {
+    this.hub.panelTransform = (msg) => localize(msg, this.lang);
     this.hub.onOverlayResult = (oid, itemId, result, msg) => this.queue.report(oid, itemId, result, msg);
     this.hub.onOverlayConnected = () => { this.queue.overlayConnected(); this.pushStatus(); };
     this.hub.onOverlayDisconnected = (id) => { this.queue.overlayDisconnected(id); this.pushStatus(); };
@@ -199,7 +209,7 @@ export class App extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    try { this.loaderPath = writeLoader(this.opts.paths.dataDir, this.port); } catch (e) { this.log.warn('Не удалось записать файл-загрузчик overlay', e); }
+    this.refreshLoader();
     await this.auth.init();
     if (this.auth.state.status === 'ok') {
       this.initialSync = this.syncRewards().catch((e) => this.log.warn('Синхронизация наград при старте не удалась', e));

@@ -113,6 +113,9 @@ export class Db {
     if (!mcols.includes('remote_ref')) this.raw.exec("ALTER TABLE media ADD COLUMN remote_ref TEXT NOT NULL DEFAULT ''");
     if (!mcols.includes('attribution')) this.raw.exec("ALTER TABLE media ADD COLUMN attribution TEXT NOT NULL DEFAULT ''");
     if (!mcols.includes('source_url')) this.raw.exec("ALTER TABLE media ADD COLUMN source_url TEXT NOT NULL DEFAULT ''");
+    // 1.4.0: язык. У тех, кто уже пользовался ботом, остаётся русский; новым установкам язык подскажет панель.
+    const hasSettings = (this.raw.prepare('SELECT COUNT(*) AS n FROM settings').get() as { n: number }).n > 0;
+    if (hasSettings) this.raw.prepare(`INSERT OR IGNORE INTO settings(key, value) VALUES ('language', '"ru"')`).run();
     this.setMeta('schema_version', '3');
   }
 

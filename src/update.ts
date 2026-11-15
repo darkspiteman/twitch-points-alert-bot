@@ -17,7 +17,8 @@ import { readZip, ZipError, type ZipEntry } from './net/zip.ts';
  * - После обновления панель показывает «Что нового».
  */
 
-export interface ChangelogEntry { version: string; date: string; changes: string[] }
+/** changes_en — те же изменения по-английски (с 1.4.0; в панели на английском показываются вместо changes). */
+export interface ChangelogEntry { version: string; date: string; changes: string[]; changes_en?: string[] }
 
 export type UpdateStep = 'idle' | 'download' | 'unpack' | 'copy' | 'deps' | 'launcher' | 'restart' | 'error';
 
@@ -75,8 +76,10 @@ export function parseChangelog(raw: unknown): ChangelogEntry[] {
     const r = e as Record<string, unknown>;
     const version = String(r?.version ?? '');
     if (!VERSION_RE.test(version)) continue;
-    const changes = Array.isArray(r.changes) ? r.changes.map((c) => String(c).slice(0, 500)).slice(0, 50) : [];
-    out.push({ version, date: String(r.date ?? '').slice(0, 20), changes });
+    const list = (v: unknown) => (Array.isArray(v) ? v.map((c) => String(c).slice(0, 500)).slice(0, 50) : []);
+    const changes = list(r.changes);
+    const changesEn = list(r.changes_en);
+    out.push({ version, date: String(r.date ?? '').slice(0, 20), changes, ...(changesEn.length ? { changes_en: changesEn } : {}) });
   }
   return out.sort((x, y) => compareVersions(y.version, x.version));
 }

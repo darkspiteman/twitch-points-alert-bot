@@ -37,6 +37,10 @@ code, .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; padding: 4px 8px 18px; }
 .brand img { width: 28px; height: 28px; }
+.lang-switch { display: flex; gap: 4px; padding: 0 8px 14px; }
+.lang-switch button { flex: 1; padding: 4px 0; font-size: 12px; font-weight: 600; }
+.lang-switch button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lang-card { margin-bottom: 16px; max-width: 520px; }
 nav { display: flex; flex-direction: column; gap: 2px; }
 nav a {
   color: var(--text); text-decoration: none; padding: 9px 12px; border-radius: 8px; opacity: .85;

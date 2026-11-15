@@ -18,14 +18,21 @@ export const LOADER_FILE = 'overlay.html';
 /** Источники WebSocket /ws/probe, кроме самой панели: локальный файл в OBS/Streamlabs (http://absolute/…) и файл в браузере. */
 export const PROBE_ORIGINS = ['http://absolute', 'null', 'file://'];
 
-export function loaderHtml(port: number): string {
+/** Служебный текст загрузчика (виден только при открытии файла в обычном браузере). */
+const LOADER_TEXT = {
+  ru: { title: 'Twitch Alert Bot — загрузчик overlay', waiting: 'Ждём запуска Twitch Alert Bot (порт ' },
+  en: { title: 'Twitch Alert Bot — overlay loader', waiting: 'Waiting for Twitch Alert Bot to start (port ' },
+};
+
+export function loaderHtml(port: number, lang: 'ru' | 'en' = 'ru'): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`Неверный порт: ${port}`);
+  const L = LOADER_TEXT[lang === 'en' ? 'en' : 'ru'];
   return `<!doctype html>
-<html lang="ru">
+<html lang="${lang === 'en' ? 'en' : 'ru'}">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws://127.0.0.1:${port}">
-<title>Twitch Alert Bot — загрузчик overlay</title>
+<title>${L.title}</title>
 <!--
   Этот файл создаёт Twitch Alert Bot (заново при каждом запуске, правки не сохранятся).
   В OBS / Streamlabs: свойства источника «Браузер» → галочка «Локальный файл» → выберите этот файл.
@@ -48,7 +55,7 @@ export function loaderHtml(port: number): string {
   var s = document.getElementById('s');
   // В OBS/Streamlabs ничего не показываем (зрители не должны видеть служебный текст).
   if (!inStreamApp) s.style.display = 'block';
-  s.textContent = 'Ждём запуска Twitch Alert Bot (порт ' + PORT + ')…';
+  s.textContent = ${JSON.stringify(L.waiting)} + PORT + ')…';
   var attempt = 0;
   var done = false;
 
@@ -100,9 +107,9 @@ export function loaderHtml(port: number): string {
 }
 
 /** Записывает загрузчик в папку данных (только если содержимое изменилось). Возвращает полный путь к файлу. */
-export function writeLoader(dir: string, port: number): string {
+export function writeLoader(dir: string, port: number, lang: 'ru' | 'en' = 'ru'): string {
   const file = path.join(dir, LOADER_FILE);
-  const html = loaderHtml(port);
+  const html = loaderHtml(port, lang);
   let current = '';
   try { current = fs.readFileSync(file, 'utf8'); } catch { /* файла ещё нет */ }
   if (current !== html) {

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { type Lang, LANGUAGES } from './i18n.ts';
 import { type StreamApp, isStreamApp, DEFAULT_OBS_EXE, defaultObsConfigDir, defaultStreamlabsConfigDir } from './stream-app.ts';
 
 export const APP_NAME = 'TwitchAlertBot';
@@ -104,6 +105,8 @@ export interface Settings {
   klipyContentFilter: 'off' | 'low' | 'medium' | 'high';
   /** Проверять наличие новой версии бота на GitHub. */
   autoUpdateCheck: boolean;
+  /** Язык панели и сообщений: '' — ещё не выбран (панель подскажет по языку браузера и сохранит выбор). */
+  language: '' | Lang;
 }
 
 export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey'] as const;
@@ -153,6 +156,7 @@ export function defaultSettings(): Settings {
     freesoundApiKey: '',
     klipyContentFilter: 'medium',
     autoUpdateCheck: true,
+    language: '',
   };
 }
 
@@ -209,6 +213,9 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (v.length > 200) throw new Error('Шаблон подписи слишком длинный');
           out[k] = v; break;
         }
+        case 'language':
+          if (!(LANGUAGES as readonly unknown[]).includes(patch[k])) throw new Error('Неверный язык: выберите русский или английский');
+          out[k] = patch[k]; break;
         case 'streamApp':
           if (!isStreamApp(patch[k])) throw new Error('Неверная программа для стрима: выберите OBS Studio или Streamlabs Desktop');
           out[k] = patch[k]; break;

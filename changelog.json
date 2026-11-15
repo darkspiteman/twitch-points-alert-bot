@@ -1,11 +1,32 @@
 [
   {
+    "version": "1.4.0",
+    "date": "2026-11-15",
+    "changes": [
+      "Английский язык: переключатель «RU / EN» в боковой панели и в «Настройках». Язык меняется сразу, без перезапуска бота.",
+      "На выбранном языке — вся панель, подсказки, «Помощь», окна обновления и перекодирования, сообщения бота и журнал событий (и уже записанные события).",
+      "Служебный текст overlay и файла-загрузчика, подпись тестового оповещения и меню бота в трее тоже переключаются.",
+      "При первой установке язык подбирается по языку браузера; у тех, кто уже пользуется ботом, остаётся русский."
+    ],
+    "changes_en": [
+      "English language: an “RU / EN” switch in the sidebar and in “Settings”. The language changes immediately, without restarting the bot.",
+      "The whole panel, tips, “Help”, the update and convert windows, bot messages and the event log (including events recorded earlier) are shown in the selected language.",
+      "The overlay and loader file service text, the test alert caption and the bot’s tray menu switch too.",
+      "On a new install the language is picked from your browser language; existing users keep Russian."
+    ]
+  },
+  {
     "version": "1.3.1",
     "date": "2026-11-15",
     "changes": [
       "«Перекодировать»: исправлена чёрная картинка после перекодирования — кадры теперь записываются ровно 30 раз в секунду через отдельный холст.",
       "Если браузер читает из файла только звук, а картинку нет, бот сразу об этом говорит и советует перекодировать файл программой HandBrake, а не сохраняет чёрное видео.",
       "На карточках видео в «Медиа» виден первый кадр."
+    ],
+    "changes_en": [
+      "“Convert”: fixed the black picture after converting — frames are now recorded exactly 30 times per second through a separate canvas.",
+      "If the browser reads only the sound from a file but not the picture, the bot says so right away and suggests converting the file with HandBrake instead of saving a black video.",
+      "Video cards in “Media” show the first frame."
     ]
   },
   {
@@ -16,6 +37,12 @@
       "Кнопка «Перекодировать» в «Медиа»: файл пересохраняется в WebM (VP9 + Opus), который понимают OBS и Streamlabs, и сам заменяется у наград — без сторонних программ.",
       "Понятные сообщения вместо «отсутствует или повреждён»: в журнале и на карточке видно, почему файл не играет и что сделать.",
       "«Проверить все файлы» снимает разовую ошибку воспроизведения, а файлы, загруженные раньше, один раз проверяются на кодеки после обновления."
+    ],
+    "changes_en": [
+      "The bot detects the video and audio codecs inside MP4 and WebM and warns right away if OBS or Streamlabs can’t show the file (H.265, MPEG-4/DivX, ProRes, AC-3 audio, etc.).",
+      "“Convert” button in “Media”: the file is re-saved as WebM (VP9 + Opus), which OBS and Streamlabs understand, and is replaced in rewards automatically — no third-party apps needed.",
+      "Clear messages instead of “missing or damaged”: the log and the card show why a file doesn’t play and what to do.",
+      "“Check all files” clears a one-time playback error, and files uploaded earlier are checked for codecs once after the update."
     ]
   },
   {
@@ -23,6 +50,9 @@
     "date": "2026-11-15",
     "changes": [
       "Client ID в «Настройки → Twitch» теперь скрыт, чтобы случайно не показать его на стриме: кнопка «Показать» открывает его на 30 секунд."
+    ],
+    "changes_en": [
+      "The Client ID in “Settings → Twitch” is now hidden so you don’t show it on stream by accident: the “Show” button reveals it for 30 seconds."
     ]
   },
   {
@@ -32,6 +62,11 @@
       "Оповещения больше не пропадают, если OBS или Streamlabs запустили раньше бота: в источнике можно выбрать «Локальный файл» overlay.html — он дождётся бота и подключится сам.",
       "Путь к файлу и кнопка «Копировать» — в «Настройки → Overlay», пошаговая инструкция — в «Помощи».",
       "Если источник открыт по адресу, главная страница подсказывает, как переключить его на файл."
+    ],
+    "changes_en": [
+      "Alerts no longer disappear if OBS or Streamlabs starts before the bot: the source can use the “Local file” overlay.html — it waits for the bot and connects by itself.",
+      "The file path and a “Copy” button are in “Settings → Overlay”, step-by-step instructions are in “Help”.",
+      "If the source is opened by URL, the Home page suggests how to switch it to the file."
     ]
   },
   {
@@ -42,6 +77,12 @@
       "Бот сам узнаёт, где открыт overlay: в OBS, в Streamlabs или во вкладке браузера (предпросмотр), и отправляет оповещения в программу для стрима.",
       "Настройки → «Программа для стрима»: выбор OBS Studio или Streamlabs Desktop, кнопка запуска и резервная копия сцен для выбранной программы.",
       "В «Помощи» и инструкции — пошаговое добавление источника для обеих программ; предупреждение, если источник открыт сразу в двух программах."
+    ],
+    "changes_en": [
+      "Streamlabs Desktop (formerly Streamlabs OBS) support: alerts work in its “Browser Source” just like in OBS — sound plays by itself, no clicks.",
+      "The bot detects where the overlay is open: in OBS, in Streamlabs or in a browser tab (preview), and sends alerts to the streaming app.",
+      "Settings → “Streaming app”: choose OBS Studio or Streamlabs Desktop, a launch button and scene backup for the selected app.",
+      "“Help” and the guide have step-by-step source setup for both apps; a warning if the source is open in both apps at once."
     ]
   },
   {
@@ -53,6 +94,13 @@
       "Мемы Klipy показываются онлайн, без хранения на диске; если Klipy недоступен — играет запасной звук награды.",
       "Раздел «Поддержать автора»: Boosty и отправка идей для новых функций.",
       "Бот сам сообщает о новой версии и обновляется одной кнопкой, а после обновления показывает список изменений."
+    ],
+    "changes_en": [
+      "New “Find media” section: memes and clips with sound, GIFs and stickers from Klipy, sounds from Freesound, downloading a file from a direct link.",
+      "“＋ Reward” button: a Twitch reward with the meme or sound you found is created in one click.",
+      "Klipy memes are shown online, without storing them on disk; if Klipy is unavailable, the reward’s fallback sound plays.",
+      "“Support the author” section: Boosty and sending ideas for new features.",
+      "The bot tells you about a new version and updates with one button, and after updating it shows the list of changes."
     ]
   },
   {
@@ -60,6 +108,9 @@
     "date": "2026-11-12",
     "changes": [
       "Первая версия: оповещения о наградах за баллы канала в OBS, очередь, видео и хромакей, автоматическое переподключение."
+    ],
+    "changes_en": [
+      "First version: channel points reward alerts in OBS, queue, video and chroma key, automatic reconnection."
     ]
   }
 ]
