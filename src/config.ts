@@ -110,6 +110,8 @@ export interface Settings {
 }
 
 export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey'] as const;
+/** Признак зашифрованного ключа в базе: «enc:<DPAPI в base64>». */
+export const ENC_PREFIX = 'enc:';
 
 /** Маска ключа для панели: «••••abcd» или пустая строка. */
 export function maskSecret(v: string): string {

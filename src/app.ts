@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { Db } from './db.ts';
 import { Logger, type ScopedLogger } from './logger.ts';
-import { type Paths, APP_VERSION, APP_ROOT, UPDATE_REPO } from './config.ts';
-import type { SecureStore } from './secure-store.ts';
+import { type Paths, APP_VERSION, APP_ROOT, UPDATE_REPO, SECRET_SETTINGS, ENC_PREFIX } from './config.ts';
+import { type SecureStore, type Protector, TestProtector } from './secure-store.ts';
 import { TwitchAuth, type FetchFn, SCOPE_MANAGE } from './twitch/auth.ts';
 import { HelixClient, HelixError, type HelixReward } from './twitch/helix.ts';
 import { EventSubClient } from './twitch/eventsub.ts';
@@ -23,6 +23,8 @@ export interface AppOptions {
   paths: Paths;
   logger: Logger;
   store: SecureStore;
+  /** Шифрование ключей API в настройках (в main.ts — DPAPI; в тестах по умолчанию — тестовое). */
+  protector?: Protector;
   port: number;
   fetchFn?: FetchFn;
   idBase?: string;
@@ -208,7 +210,37 @@ export class App extends EventEmitter {
     }
   }
 
+  /**
+   * Ключи Klipy и Freesound: в базе — зашифрованы, в памяти — открыты. При запуске расшифровываем,
+   * а ключи, сохранённые открытым текстом версиями до 1.4.1, шифруем.
+   */
+  async loadSecrets(): Promise<void> {
+    const prot = this.opts.protector ?? new TestProtector();
+    for (const k of SECRET_SETTINGS) {
+      const raw = this.db.rawSetting(k);
+      if (typeof raw !== 'string' || !raw) continue;
+      if (raw.startsWith(ENC_PREFIX)) {
+        try { this.db.setSecretPlain(k, await prot.unprotect(raw.slice(ENC_PREFIX.length))); } catch (e) {
+          this.log.warn(`Ключ ${k} не расшифровывается`, e);
+          this.journal('warn', 'settings', `Не удалось расшифровать ключ ${k === 'klipyApiKey' ? 'Klipy' : 'Freesound'} (например, база перенесена с другого компьютера) — вставьте его заново в «Настройки» → «Поиск медиа».`);
+        }
+      } else {
+        try { await this.saveSecret(k, raw); } catch (e) { this.log.warn(`Ключ ${k} не удалось зашифровать — остаётся как был`, e); }
+      }
+    }
+    this.finder.registerKeys();
+  }
+
+  /** Сохранение ключа API: в базу — зашифрованным. Пустая строка — удалить ключ. */
+  async saveSecret(key: (typeof SECRET_SETTINGS)[number], plain: string): Promise<void> {
+    if (!plain) { this.db.updateSettings({ [key]: '' }); this.db.setSecretPlain(key, ''); return; }
+    const enc = await (this.opts.protector ?? new TestProtector()).protect(plain);
+    this.db.setSecretPlain(key, plain);
+    this.db.updateSettings({ [key]: ENC_PREFIX + enc });
+  }
+
   async start(): Promise<void> {
+    await this.loadSecrets();
     this.refreshLoader();
     await this.auth.init();
     if (this.auth.state.status === 'ok') {

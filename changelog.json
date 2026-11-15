@@ -1,5 +1,21 @@
 [
   {
+    "version": "1.4.1",
+    "date": "2026-11-15",
+    "changes": [
+      "Обновления подписываются автором: бот проверяет подпись и каждый файл перед установкой. Подменённое обновление не установится, даже если кто-то получит доступ к репозиторию на GitHub.",
+      "Сайты, открытые в браузере, больше не могут незаметно обращаться к боту (например, тратить лимит поиска Klipy).",
+      "Кнопка «Запустить OBS/Streamlabs» запускает только саму программу из Program Files или вашей папки пользователя.",
+      "Ключи Klipy и Freesound хранятся зашифрованными средствами Windows, как и вход в Twitch."
+    ],
+    "changes_en": [
+      "Updates are signed by the author: the bot checks the signature and every file before installing. A tampered update won’t install, even if someone gains access to the GitHub repository.",
+      "Websites open in your browser can no longer silently send requests to the bot (for example, to use up your Klipy search limit).",
+      "The “Start OBS/Streamlabs” button only starts the app itself from Program Files or your user folder.",
+      "Klipy and Freesound keys are stored encrypted by Windows, like your Twitch sign-in."
+    ]
+  },
+  {
     "version": "1.4.0",
     "date": "2026-11-15",
     "changes": [

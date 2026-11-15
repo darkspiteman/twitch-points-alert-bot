@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
+import { SIGNATURE_FILE, signUpdate, verifyUpdate, UPDATE_PUBLIC_KEYS } from '../src/update-signature.ts';
 import { Readable } from 'node:stream';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
@@ -59,20 +61,38 @@ function zipTransport(zip: Buffer | (() => Buffer)): Transport {
   };
 }
 
-function release(version: string, extra: Record<string, string> = {}, deps: Record<string, string> = { ws: '^8' }) {
-  const p = 'bot-main/';
-  return makeZip({
-    [p + 'package.json']: JSON.stringify({ name: 'twitch-alert-bot', version, dependencies: deps }),
-    [p + 'changelog.json']: changelog([version, '1.1.0']),
-    [p + 'src/main.ts']: `// main ${version}`,
-    [p + 'src/new-module.ts']: 'export const x = 1;',
-    [p + 'public/panel/app.js']: `// panel ${version}`,
-    [p + 'public/overlay/overlay.js']: '// overlay',
-    [p + 'launcher/TrayLauncher.cs']: `// launcher ${version}`,
-    [p + 'data/evil.txt']: 'не должен попасть в данные',
-    [p + 'node_modules/ws/package.json']: '{"name":"evil"}',
-    ...Object.fromEntries(Object.entries(extra).map(([k, v]) => [p + k, v])),
-  });
+/** Тестовый ключ подписи обновлений (настоящий ключ автора хранится только у автора). */
+const TEST_KEY = crypto.generateKeyPairSync('ed25519');
+const TEST_KEY_PEM = TEST_KEY.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const TEST_PUB = TEST_KEY.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+
+type ReleaseOpts = { sign?: 'test' | 'none' | 'other'; tamper?: (files: Record<string, string>) => void; signedVersion?: string };
+
+function releaseFiles(version: string, extra: Record<string, string> = {}, deps: Record<string, string> = { ws: '^8' }): Record<string, string> {
+  return {
+    'package.json': JSON.stringify({ name: 'twitch-alert-bot', version, dependencies: deps }),
+    'changelog.json': changelog([version, '1.1.0']),
+    'src/main.ts': `// main ${version}`,
+    'src/new-module.ts': 'export const x = 1;',
+    'public/panel/app.js': `// panel ${version}`,
+    'public/overlay/overlay.js': '// overlay',
+    'launcher/TrayLauncher.cs': `// launcher ${version}`,
+    'data/evil.txt': 'не должен попасть в данные',
+    'node_modules/ws/package.json': '{"name":"evil"}',
+    ...extra,
+  };
+}
+
+/** Архив версии, как его отдаёт GitHub (папка bot-main/), подписанный тестовым ключом. tamper — подмена после подписи. */
+function release(version: string, extra: Record<string, string> = {}, deps: Record<string, string> = { ws: '^8' }, o: ReleaseOpts = {}) {
+  const files = releaseFiles(version, extra, deps);
+  const sign = o.sign ?? 'test';
+  if (sign !== 'none') {
+    const pem = sign === 'other' ? crypto.generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() : TEST_KEY_PEM;
+    files[SIGNATURE_FILE] = signUpdate(o.signedVersion ?? version, new Map(Object.entries(files).map(([k, v]) => [k, Buffer.from(v)])), pem);
+  }
+  o.tamper?.(files);
+  return makeZip(Object.fromEntries(Object.entries(files).map(([k, v]) => ['bot-main/' + k, v])));
 }
 
 /** Установленная программа версии 1.1.0 во временной папке. */
@@ -103,6 +123,7 @@ function makeUpdater(ctx: ReturnType<typeof setupInstall>, o: { transport?: Tran
     db: ctx.db, log: quietLogger().child('update'), journal: (_l, _t, m) => journal.push(m), appRoot: ctx.root, dataDir: path.join(ctx.root, 'data'),
     currentVersion: '1.1.0', repo: 'owner/bot', fetchFn: fetchMock.fetch as typeof fetch, transport: o.transport,
     runNpm: o.runNpm, buildLauncher: async (r) => { o.launcherBuilds?.push(r); }, onChange: (s) => statuses.push(s),
+    publicKeys: [TEST_PUB],
   });
   let restarted = 0;
   u.onRestart = () => { restarted++; };
@@ -208,6 +229,33 @@ test('установка: неверная версия в архиве, пов�
   assert.equal(fs.existsSync(path.join(ctx.root, 'src', 'new-module.ts')), false);
   assert.ok(m.journal.some((x) => /Прежняя версия восстановлена/.test(x)));
   assert.equal(m.restarted(), 0);
+});
+
+test('подпись обновления: без подписи, чужой ключ, подменённый/лишний/недостающий файл, чужая версия — ничего не установлено', async () => {
+  const ctx = setupInstall();
+  const cases: Array<[string, Buffer, RegExp]> = [
+    ['без подписи', release('1.2.0', {}, undefined, { sign: 'none' }), /не подписано автором/],
+    ['чужой ключ', release('1.2.0', {}, undefined, { sign: 'other' }), /не прошла проверку/],
+    ['подменён файл', release('1.2.0', {}, undefined, { tamper: (f) => { f['src/main.ts'] = 'require("child_process").exec("calc")'; } }), /src\/main\.ts .*не совпадает/],
+    ['лишний файл', release('1.2.0', {}, undefined, { tamper: (f) => { f['src/evil.ts'] = 'evil'; } }), /лишний файл src\/evil\.ts/],
+    ['нет файла', release('1.2.0', {}, undefined, { tamper: (f) => { delete f['src/new-module.ts']; } }), /не хватает файла src\/new-module\.ts/],
+    ['подпись испорчена', release('1.2.0', {}, undefined, { tamper: (f) => { f[SIGNATURE_FILE] = f[SIGNATURE_FILE].replace(/"signature": "./, '"signature": "A'); } }), /не прошла проверку|повреждена/],
+    ['подпись другой версии', release('1.2.0', {}, undefined, { signedVersion: '1.1.9' }), /Подпись выдана для версии 1\.1\.9/],
+  ];
+  for (const [name, zip, re] of cases) {
+    const m = makeUpdater(ctx, { transport: zipTransport(zip) });
+    await m.u.check();
+    await assert.rejects(m.u.install(), re, name);
+    assert.equal(ctx.read('src/main.ts'), '// main 1.1.0', name);
+    assert.equal(fs.existsSync(path.join(ctx.root, 'src', 'evil.ts')), false, name);
+    assert.equal(m.restarted(), 0, name);
+  }
+  // Ключ бота настоящий: тестовая подпись им не проходит, а формат ключа читается.
+  assert.ok(UPDATE_PUBLIC_KEYS.length >= 1 && !UPDATE_PUBLIC_KEYS.includes(TEST_PUB));
+  const files = new Map(Object.entries(releaseFiles('1.2.0')).map(([k, v]) => [k, Buffer.from(v)] as [string, Buffer]));
+  files.set(SIGNATURE_FILE, Buffer.from(signUpdate('1.2.0', files, TEST_KEY_PEM)));
+  assert.throws(() => verifyUpdate(files), /не прошла проверку/);
+  assert.equal(verifyUpdate(files, [TEST_PUB]).version, '1.2.0');
 });
 
 test('установка запрещена в рабочей папке git (копия разработчика)', async () => {

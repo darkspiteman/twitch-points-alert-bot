@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { defaultSettings, type Settings } from './config.ts';
+import { defaultSettings, type Settings, SECRET_SETTINGS, ENC_PREFIX } from './config.ts';
 
 export interface RewardRow {
   id: string;
@@ -124,11 +124,28 @@ export class Db {
   }
 
   // ---------- настройки ----------
+  /** Расшифрованные ключи API (в базе они хранятся зашифрованными: «enc:…»). Заполняет App при запуске. */
+  private secretPlain = new Map<string, string>();
+
+  setSecretPlain(key: string, value: string): void {
+    if (value) this.secretPlain.set(key, value); else this.secretPlain.delete(key);
+    this.settingsCache = null;
+  }
+
+  /** Значение настройки как оно лежит в базе (для ключей — зашифрованное). */
+  rawSetting(key: string): unknown {
+    const r = this.raw.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+    try { return r ? JSON.parse(r.value) : undefined; } catch { return undefined; }
+  }
+
   getSettings(): Settings {
     if (this.settingsCache) return { ...this.settingsCache };
     const s = defaultSettings() as unknown as Record<string, unknown>;
     for (const row of this.raw.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[]) {
       if (row.key in s) { try { s[row.key] = JSON.parse(row.value); } catch { /* испорченное значение → по умолчанию */ } }
+    }
+    for (const k of SECRET_SETTINGS) {
+      if (typeof s[k] === 'string' && (s[k] as string).startsWith(ENC_PREFIX)) s[k] = this.secretPlain.get(k) ?? '';
     }
     this.settingsCache = s as unknown as Settings;
     return { ...this.settingsCache };

@@ -5,6 +5,7 @@ import type { Db } from './db.ts';
 import type { ScopedLogger } from './logger.ts';
 import type { FetchFn } from './twitch/auth.ts';
 import { safeDownload, DownloadError, type Transport } from './net/safe-download.ts';
+import { verifyUpdate, UPDATE_PUBLIC_KEYS } from './update-signature.ts';
 import { readZip, ZipError, type ZipEntry } from './net/zip.ts';
 
 /**
@@ -54,6 +55,8 @@ export interface UpdaterDeps {
   /** Пересборка лаунчера TwitchAlertBot.exe (если изменился его исходный код). */
   buildLauncher?: (root: string) => Promise<void>;
   onChange?: (s: UpdateStatus) => void;
+  /** Открытые ключи для проверки подписи обновления (тесты подставляют свой). */
+  publicKeys?: readonly string[];
 }
 
 /** Сравнение версий вида 1.2.3: >0 — a новее. */
@@ -218,6 +221,8 @@ export class Updater {
       let entries: ZipEntry[];
       try { entries = readZip(zipBuf); } catch (e) { throw new Error(e instanceof ZipError ? e.message : 'Архив обновления повреждён'); }
       const prefix = commonPrefix(entries);
+      // Подпись автора: ни один файл не установится, если архив подменён (даже при взломе репозитория на GitHub).
+      const signed = verifyUpdate(new Map(entries.map((e) => [e.name.slice(prefix.length), e.data] as [string, Buffer]).filter(([rel]) => rel)), this.d.publicKeys ?? UPDATE_PUBLIC_KEYS);
       const files = entries.map((e) => ({ rel: e.name.slice(prefix.length), data: e.data })).filter((f) => f.rel && !isKept(f.rel));
       const byRel = new Map(files.map((f) => [f.rel, f.data]));
       const pkgBuf = byRel.get('package.json');
@@ -225,6 +230,7 @@ export class Updater {
       try { pkg = JSON.parse(String(pkgBuf ?? '')); } catch { throw new Error('В архиве обновления нет корректного package.json'); }
       if (pkg.name !== readJson(path.join(root, 'package.json'))?.name) throw new Error('Архив обновления не похож на Twitch Alert Bot');
       if (pkg.version !== target) throw new Error(`В архиве версия ${pkg.version}, а ожидалась ${target}. Попробуйте позже.`);
+      if (signed.version !== pkg.version) throw new Error(`Подпись выдана для версии ${signed.version}, а в архиве ${pkg.version} — установка отменена.`);
       for (const must of ['src/main.ts', 'public/panel/app.js', 'public/overlay/overlay.js', 'changelog.json']) {
         if (!byRel.has(must)) throw new Error(`В архиве обновления нет файла ${must}`);
       }
@@ -302,9 +308,9 @@ function run(file: string, args: string[], cwd: string, timeoutMs: number): Prom
   });
 }
 
-/** npm из системного Node.js (он нужен для установки бота). */
+/** npm из системного Node.js (он нужен для установки бота). Скрипты пакетов не запускаются: зависимостям бота они не нужны. */
 function runNpmInstall(root: string): Promise<void> {
-  return run(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm.cmd install --omit=dev --no-audit --no-fund'], root, 300_000);
+  return run(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm.cmd install --omit=dev --no-audit --no-fund --ignore-scripts'], root, 300_000);
 }
 
 /** Работающий .exe нельзя перезаписать, но можно переименовать: старый лаунчер остаётся в памяти, новый — для следующего запуска. */

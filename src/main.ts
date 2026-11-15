@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { makePaths, DEFAULT_PORT, APP_VERSION, APP_ROOT } from './config.ts';
 import { Logger } from './logger.ts';
-import { DpapiStore } from './secure-store.ts';
+import { DpapiStore, DpapiProtector } from './secure-store.ts';
 import { App } from './app.ts';
 import { createServer } from './server/http.ts';
 import { Db } from './db.ts';
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   }
 
   log.info(`Запуск Twitch Alert Bot ${APP_VERSION}, данные: ${paths.dataDir}`);
-  const app = new App({ paths, logger, store: new DpapiStore(paths.tokenFile), port });
+  const app = new App({ paths, logger, store: new DpapiStore(paths.tokenFile), protector: new DpapiProtector(), port });
   const server = createServer(app, { onShutdown: () => void shutdown('panel') });
   // После установки обновления — выход с кодом 4: лаунчер сразу запускает новую версию.
   app.updater.onRestart = () => void shutdown('update', 4);

@@ -72,6 +72,27 @@ export function resolveExe(s: StreamAppSettings, exists: (p: string) => boolean 
   return s.obsExePath && exists(s.obsExePath) ? s.obsExePath : null;
 }
 
+/**
+ * Можно ли запускать этот файл кнопкой «Запустить OBS/Streamlabs» и при автозапуске. Пустая строка — можно, иначе текст ошибки.
+ * Только сам exe программы (obs64.exe / Streamlabs OBS.exe) и только из папок, куда другие пользователи Windows
+ * писать не могут (Program Files, папка текущего пользователя). Иначе другой пользователь этого компьютера мог бы
+ * через панель подложить свою программу, и бот запустил бы её от вашего имени.
+ */
+export function launchDenied(exe: string, app: StreamApp, env: NodeJS.ProcessEnv = process.env): string {
+  const want = app === 'streamlabs' ? 'streamlabs obs.exe' : 'obs64.exe';
+  if (path.win32.basename(exe).toLowerCase() !== want) {
+    return `Запускать можно только ${app === 'streamlabs' ? '«Streamlabs OBS.exe»' : '«obs64.exe»'} — проверьте путь в «Настройки → Программа для стрима».`;
+  }
+  const full = path.win32.resolve(exe).toLowerCase();
+  const pub = path.win32.join(env.SystemDrive || 'C:', 'Users', 'Public').toLowerCase();
+  const roots = [env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramW6432, env.USERPROFILE]
+    .filter((d): d is string => !!d).map((d) => path.win32.resolve(d).toLowerCase() + '\\');
+  if (full.startsWith(pub + '\\') || !roots.some((r) => full.startsWith(r))) {
+    return 'Запускать программу для стрима можно только из Program Files или из вашей папки пользователя. Перенесите программу или запускайте её сами.';
+  }
+  return '';
+}
+
 /** Папка со сценами выбранной программы. */
 export function scenesDir(s: StreamAppSettings): string {
   return s.streamApp === 'streamlabs'

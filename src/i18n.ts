@@ -92,6 +92,7 @@ const EN: Array<[string, string]> = [
   ['Неверная программа для стрима: выберите OBS Studio или Streamlabs Desktop', 'Invalid streaming app: choose OBS Studio or Streamlabs Desktop'],
   ['Слишком длинный путь', 'Path is too long'],
   ['Неверный язык: выберите русский или английский', 'Invalid language: choose Russian or English'],
+  ['Не удалось расшифровать ключ {k} (например, база перенесена с другого компьютера) — вставьте его заново в «Настройки» → «Поиск медиа».', 'Couldn’t decrypt the {k} key (for example, the database was moved from another computer) — paste it again in “Settings” → “Media search”.'],
 
   // ---- db.ts ----
 
@@ -247,6 +248,13 @@ const EN: Array<[string, string]> = [
   ['Обновление до {v} не установлено: {e}', 'Update to {v} wasn’t installed: {e}'],
   ['Установлена версия {v} (была {f}). Резервная копия прежних файлов: {d}', 'Version {v} installed (was {f}). Backup of the previous files: {d}'],
   ['файл не создан', 'file not created'],
+  ['Обновление не подписано автором — установка отменена ради безопасности.', 'The update isn’t signed by the author — installation cancelled for safety.'],
+  ['Подпись обновления повреждена — установка отменена.', 'The update signature is damaged — installation cancelled.'],
+  ['Подпись обновления не прошла проверку — архив мог быть подменён. Установка отменена.', 'The update signature check failed — the archive may have been tampered with. Installation cancelled.'],
+  ['В архиве обновления лишний файл {f}, которого нет в подписи, — установка отменена.', 'The update archive has an extra file {f} that isn’t in the signature — installation cancelled.'],
+  ['Файл {f} в архиве обновления не совпадает с подписанным — установка отменена.', 'File {f} in the update archive doesn’t match the signed one — installation cancelled.'],
+  ['В архиве обновления не хватает файла {f} из подписи — установка отменена.', 'The update archive is missing the signed file {f} — installation cancelled.'],
+  ['Подпись выдана для версии {a}, а в архиве {b} — установка отменена.', 'The signature is for version {a}, but the archive has {b} — installation cancelled.'],
 
   // ---- net/safe-download.ts ----
   ['Ссылка слишком длинная', 'The link is too long'],
@@ -327,6 +335,8 @@ const EN: Array<[string, string]> = [
   ['Streamlabs Desktop не найден. Укажите путь к «Streamlabs OBS.exe» в «Настройки → Программа для стрима».', 'Streamlabs Desktop not found. Set the path to “Streamlabs OBS.exe” in “Settings → Streaming app”.'],
   ['OBS не найден по указанному пути. Проверьте путь в «Настройки → Программа для стрима».', 'OBS wasn’t found at the specified path. Check the path in “Settings → Streaming app”.'],
   ['Не удалось запустить {app}: {e}', 'Couldn’t start {app}: {e}'],
+  ['Запускать можно только {exe} — проверьте путь в «Настройки → Программа для стрима».', 'Only {exe} can be started — check the path in “Settings → Streaming app”.'],
+  ['Запускать программу для стрима можно только из Program Files или из вашей папки пользователя. Перенесите программу или запускайте её сами.', 'The streaming app can only be started from Program Files or your user folder. Move the app or start it yourself.'],
 
   // ---- twitch/auth.ts ----
   ['Подключено как {login}', 'Connected as {login}'],

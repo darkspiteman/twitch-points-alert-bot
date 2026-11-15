@@ -54,6 +54,28 @@ export class DpapiStore implements SecureStore {
   }
 }
 
+/** Шифрование отдельных строк (ключи API в настройках). */
+export interface Protector {
+  protect(plain: string): Promise<string>;
+  unprotect(enc: string): Promise<string>;
+}
+
+/** Windows DPAPI (CurrentUser): как и токены Twitch, ключи может расшифровать только этот пользователь Windows. */
+export class DpapiProtector implements Protector {
+  async protect(plain: string): Promise<string> { return runPowerShell(PROTECT, Buffer.from(plain, 'utf8').toString('base64')); }
+  async unprotect(enc: string): Promise<string> { return Buffer.from(await runPowerShell(UNPROTECT, enc), 'base64').toString('utf8'); }
+}
+
+/** Для тестов: обратимое преобразование без DPAPI (в базе всё равно не открытый текст). */
+export class TestProtector implements Protector {
+  async protect(plain: string): Promise<string> { return Buffer.from('test:' + plain, 'utf8').toString('base64'); }
+  async unprotect(enc: string): Promise<string> {
+    const s = Buffer.from(enc, 'base64').toString('utf8');
+    if (!s.startsWith('test:')) throw new Error('не расшифровывается');
+    return s.slice(5);
+  }
+}
+
 /** Хранилище в памяти — только для тестов. */
 export class MemoryStore implements SecureStore {
   value: string | null = null;

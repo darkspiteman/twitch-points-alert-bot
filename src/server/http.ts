@@ -3,13 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import type { App } from '../app.ts';
-import { PUBLIC_DIR, validateSettingsPatch, publicSettings, SUPPORT_LINKS } from '../config.ts';
+import { PUBLIC_DIR, validateSettingsPatch, publicSettings, SUPPORT_LINKS, SECRET_SETTINGS } from '../config.ts';
 import { FindError, KLIPY_TYPES, type KlipyType } from '../find.ts';
 import { HelixError } from '../twitch/helix.ts';
 import { MAX_UPLOAD_BYTES, isRemote, mediaFlags } from '../media.ts';
 import { localize, tr } from '../i18n.ts';
 import { getAutostart, setAutostart } from '../autostart.ts';
-import { STREAM_APPS, resolveExe } from '../stream-app.ts';
+import { STREAM_APPS, resolveExe, launchDenied } from '../stream-app.ts';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -80,7 +80,14 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     const { ok, error } = validateSettingsPatch((body ?? {}) as Record<string, unknown>);
     if (error) throw new HttpError(400, error);
     const before = app.db.getSettings();
-    const after = app.db.updateSettings(ok);
+    // Ключи API — в базу зашифрованными (DPAPI), остальные настройки — как есть.
+    const rest: Record<string, unknown> = { ...ok };
+    for (const k of SECRET_SETTINGS) {
+      if (ok[k] === undefined) continue;
+      await app.saveSecret(k, String(ok[k]));
+      delete rest[k];
+    }
+    const after = app.db.updateSettings(rest);
     app.hub.pushView();
     let note = '';
     if (ok.clientId !== undefined && ok.clientId !== before.clientId) {
@@ -351,6 +358,10 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       const method = req.method ?? 'GET';
 
       if (url.pathname.startsWith('/api/')) {
+        // Запросы, которые браузер отправил по команде чужого сайта (картинка, скрипт, форма), — даже GET:
+        // иначе сайт мог бы, не видя ответа, тратить лимиты ключей Klipy/Freesound и дёргать Twitch API.
+        const site = String(req.headers['sec-fetch-site'] ?? '');
+        if (site === 'cross-site' || site === 'same-site') throw new HttpError(403, 'Запрос с чужого сайта отклонён');
         if (method !== 'GET' && method !== 'HEAD') checkCsrf(req, app.port);
         const route = routes.find((r) => r.method === method && r.pattern.test(url.pathname));
         if (!route) throw new HttpError(404, 'Нет такого метода API');
@@ -491,10 +502,12 @@ function serveMedia(app: App, req: IncomingMessage, res: ServerResponse, idRaw: 
 function launchObs(app: App): Promise<{ ok: boolean; already?: boolean; app: string }> {
   const s = app.db.getSettings();
   const info = STREAM_APPS[s.streamApp];
+  const exe = resolveExe(s);
+  const denied = exe ? launchDenied(exe, s.streamApp) : '';
+  if (denied) return Promise.reject(new HttpError(400, denied));
   return new Promise((resolve, reject) => {
     execFile('tasklist.exe', ['/FI', `IMAGENAME eq ${info.processName}`, '/NH'], { windowsHide: true }, (_e, out) => {
       if (String(out).toLowerCase().includes(info.processName.toLowerCase())) return resolve({ ok: true, already: true, app: info.name });
-      const exe = resolveExe(s);
       if (!exe) {
         return reject(new HttpError(400, s.streamApp === 'streamlabs'
           ? 'Streamlabs Desktop не найден. Укажите путь к «Streamlabs OBS.exe» в «Настройки → Программа для стрима».'
