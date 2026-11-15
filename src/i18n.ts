@@ -44,6 +44,23 @@ const EN: Array<[string, string]> = [
   ['код {c} ({r})', 'code {c} ({r})'],
   ['код {c}', 'code {c}'],
 
+  // ---- статистика (1.5.0) ----
+  ['{m}. Проверьте пароль в «Статистика» → «Подключение к OBS».', '{m}. Check the password in “Stats” → “Connecting to OBS”.'],
+  ['Не удалось расшифровать пароль OBS WebSocket (например, база перенесена с другого компьютера) — введите его заново в «Статистика» → «Подключение к OBS».', 'Couldn’t decrypt the OBS WebSocket password (for example, the database was moved from another computer) — enter it again in “Stats” → “Connecting to OBS”.'],
+  ['Пароль OBS WebSocket выглядит неверно', 'The OBS WebSocket password looks wrong'],
+  ['Неизвестный показатель overlay статистики', 'Unknown stats overlay field'],
+  ['Неверное расположение overlay статистики', 'Invalid stats overlay layout'],
+  ['Неверный стиль overlay статистики', 'Invalid stats overlay style'],
+  ['В OBS выключен сервер WebSocket', 'The WebSocket server is turned off in OBS'],
+  ['OBS требует пароль WebSocket, а он не найден', 'OBS requires a WebSocket password, but none was found'],
+  ['OBS не принял пароль WebSocket', 'OBS rejected the WebSocket password'],
+  ['Связь с OBS потеряна', 'Lost connection to OBS'],
+  ['OBS не запущен или сервер WebSocket недоступен', 'OBS isn’t running or its WebSocket server is unavailable'],
+  ['Нет связи с OBS', 'No connection to OBS'],
+  ['OBS не ответил', 'OBS did not respond'],
+  ['Пароль OBS WebSocket сохранён.', 'OBS WebSocket password saved.'],
+  ['Пароль OBS WebSocket удалён — бот возьмёт его из настроек OBS.', 'OBS WebSocket password removed — the bot will take it from the OBS settings.'],
+
   // ---- app.ts ----
   ['После перезапуска отменено незавершённых оповещений: {n} (старые награды не воспроизводятся)', 'Unfinished alerts cancelled after restart: {n} (old rewards are not played)'],
   ['«{t}»: онлайн-медиа не загрузилось в {app} ({m}) — сыграл запасной звук', '“{t}”: online media failed to load in {app} ({m}) — the fallback sound played'],

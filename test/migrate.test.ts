@@ -60,3 +60,28 @@ test('повторно не переносит, если в новой папк�
 test('нет старых данных — ничего не делает', () => {
   assert.equal(migrateLegacyData(path.join(tmpDir(), 'data'), legacyDataDirs(tmpDir())), null);
 });
+
+test('1.5.0: предел длительности 60 с (старое значение по умолчанию) поднимается до 5 минут один раз, своё значение не трогается', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'bot.sqlite');
+  let db = new Db(file);
+  assert.equal(db.getSettings().maxDurationMs, 300000, 'новая установка — 5 минут');
+  db.updateSettings({ maxDurationMs: 60000 });
+  db.raw.prepare(`DELETE FROM meta WHERE key = 'max_duration_5min'`).run(); // как база версии 1.4
+  db.close();
+  db = new Db(file);
+  assert.equal(db.getSettings().maxDurationMs, 300000);
+  db.updateSettings({ maxDurationMs: 60000 }); // пользователь сам вернул 60 с — больше не трогаем
+  db.close();
+  db = new Db(file);
+  assert.equal(db.getSettings().maxDurationMs, 60000);
+  db.close();
+  const dir2 = tmpDir();
+  db = new Db(path.join(dir2, 'bot.sqlite'));
+  db.updateSettings({ maxDurationMs: 90000 });
+  db.raw.prepare(`DELETE FROM meta WHERE key = 'max_duration_5min'`).run();
+  db.close();
+  db = new Db(path.join(dir2, 'bot.sqlite'));
+  assert.equal(db.getSettings().maxDurationMs, 90000);
+  db.close();
+});

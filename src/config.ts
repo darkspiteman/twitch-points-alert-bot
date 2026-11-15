@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { type Lang, LANGUAGES } from './i18n.ts';
+import { OVERLAY_FIELDS } from './stats.ts';
 import { type StreamApp, isStreamApp, DEFAULT_OBS_EXE, defaultObsConfigDir, defaultStreamlabsConfigDir } from './stream-app.ts';
 
 export const APP_NAME = 'TwitchAlertBot';
@@ -107,9 +108,20 @@ export interface Settings {
   autoUpdateCheck: boolean;
   /** Язык панели и сообщений: '' — ещё не выбран (панель подскажет по языку браузера и сохранит выбор). */
   language: '' | Lang;
+  /** Порт OBS WebSocket; 0 — взять из настроек OBS (plugin_config/obs-websocket/config.json). */
+  obsWsPort: number;
+  /** Пароль OBS WebSocket; пустая строка — взять из настроек OBS. В базе — зашифрован. */
+  obsWsPassword: string;
+  /** Overlay статистики: какие показатели, через запятую (см. OVERLAY_FIELDS в stats.ts). */
+  statsOverlayFields: string;
+  statsOverlayLayout: 'row' | 'column';
+  statsOverlayStyle: 'dark' | 'light' | 'clear' | 'twitch';
+  statsOverlayLabels: boolean;
+  /** Масштаб overlay статистики, %. */
+  statsOverlayScale: number;
 }
 
-export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey'] as const;
+export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey', 'obsWsPassword'] as const;
 /** Признак зашифрованного ключа в базе: «enc:<DPAPI в base64>». */
 export const ENC_PREFIX = 'enc:';
 
@@ -138,7 +150,7 @@ export function defaultSettings(): Settings {
     maxItemAgeSec: 300,
     userCooldownSec: 0,
     defaultImageDurationMs: 5000,
-    maxDurationMs: 60000,
+    maxDurationMs: 300000,
     showCaption: true,
     captionTemplate: '{user}: {reward}',
     overlayPosition: 'center',
@@ -159,6 +171,13 @@ export function defaultSettings(): Settings {
     klipyContentFilter: 'medium',
     autoUpdateCheck: true,
     language: '',
+    obsWsPort: 0,
+    obsWsPassword: '',
+    statsOverlayFields: 'session,viewers,chatters,followers,bitrate',
+    statsOverlayLayout: 'row',
+    statsOverlayStyle: 'dark',
+    statsOverlayLabels: true,
+    statsOverlayScale: 100,
   };
 }
 
@@ -183,10 +202,28 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
         case 'maxItemAgeSec': num(k, 10, 86400); break;
         case 'userCooldownSec': num(k, 0, 3600); break;
         case 'defaultImageDurationMs': num(k, 500, 600000); break;
-        case 'maxDurationMs': num(k, 1000, 600000); break;
+        case 'maxDurationMs': num(k, 1000, 3600000); break;
         case 'overlayMaxWidthPct': num(k, 5, 100); break;
         case 'overlayMaxHeightPct': num(k, 5, 100); break;
         case 'historyRetentionDays': num(k, 1, 3650); break;
+        case 'obsWsPort': if (Number(patch[k]) !== 0) num(k, 1024, 65535); else out[k] = 0; break;
+        case 'statsOverlayScale': num(k, 50, 300); break;
+        case 'obsWsPassword': {
+          const v = String(patch[k] ?? '');
+          if (v.length > 200 || /[\r\n]/.test(v)) throw new Error('Пароль OBS WebSocket выглядит неверно');
+          out[k] = v; break;
+        }
+        case 'statsOverlayFields': {
+          const list = String(patch[k] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+          if (list.some((f) => !(OVERLAY_FIELDS as readonly string[]).includes(f))) throw new Error('Неизвестный показатель overlay статистики');
+          out[k] = [...new Set(list)].join(','); break;
+        }
+        case 'statsOverlayLayout':
+          if (patch[k] !== 'row' && patch[k] !== 'column') throw new Error('Неверное расположение overlay статистики');
+          out[k] = patch[k]; break;
+        case 'statsOverlayStyle':
+          if (!['dark', 'light', 'clear', 'twitch'].includes(String(patch[k]))) throw new Error('Неверный стиль overlay статистики');
+          out[k] = patch[k]; break;
         case 'mode':
           if (patch[k] !== 'active' && patch[k] !== 'observe') throw new Error('Неверный режим работы');
           out[k] = patch[k]; break;
@@ -195,7 +232,7 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (!allowed.includes(String(patch[k]))) throw new Error('Неверное положение overlay');
           out[k] = patch[k]; break;
         }
-        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck':
+        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck': case 'statsOverlayLabels':
           out[k] = Boolean(patch[k]); break;
         case 'clientId': {
           const v = String(patch[k] ?? '').trim();

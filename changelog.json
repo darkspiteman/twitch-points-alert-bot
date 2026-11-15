@@ -1,5 +1,27 @@
 [
   {
+    "version": "1.5.0",
+    "date": "2026-11-15",
+    "changes": [
+      "Новый раздел «Статистика»: док-панель для OBS со временем эфира, зрителями, кто в чате, фолловерами, подписчиками, баллами подписок, битрейтом, разрешением, потерями кадров и нагрузкой на процессор — в реальном времени.",
+      "«Кто в чате»: видно, кто сейчас на стриме, даже если молчит (без ботов), новые люди подсвечиваются. Обычно это быстрее, чем счётчик зрителей Twitch.",
+      "Лента событий в доке: фолловы, подписки, подарки и рейды — мгновенно.",
+      "Битрейт, кадры и время эфира бот берёт прямо из OBS (сервер WebSocket в OBS; пароль бот находит сам) и предупреждает, если теряются кадры или падает битрейт.",
+      "Статистику можно вывести на экран стрима: выберите показатели, стиль и размер — изменения применяются сразу.",
+      "Чтобы видеть чат, подписчиков и события фолловеров, войдите в Twitch заново («Настройки» → «Войти заново»).",
+      "Видео и звук теперь играют до 5 минут (было до 1 минуты). Предел можно поменять: «Настройки» → «Максимальная длительность», до 1 часа."
+    ],
+    "changes_en": [
+      "New “Stats” section: an OBS dock with stream time, viewers, who’s in chat, followers, subscribers, sub points, bitrate, resolution, dropped frames and CPU load — in real time.",
+      "“In chat”: see who is on the stream right now, even if silent (without bots); newcomers are highlighted. Usually faster than the Twitch viewer counter.",
+      "Event feed in the dock: follows, subs, gifts and raids — instantly.",
+      "The bot reads bitrate, frames and stream time straight from OBS (the OBS WebSocket server; the bot finds the password itself) and warns when frames drop or bitrate falls.",
+      "Stats can be shown on your stream: choose the numbers, style and size — changes apply instantly.",
+      "To see chat, subscribers and follow events, sign in to Twitch again (“Settings” → “Sign in again”).",
+      "Videos and sounds now play for up to 5 minutes (was 1 minute). Change the limit in “Settings” → “Maximum duration”, up to 1 hour."
+    ]
+  },
+  {
     "version": "1.4.1",
     "date": "2026-11-15",
     "changes": [

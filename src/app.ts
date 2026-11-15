@@ -17,7 +17,10 @@ import { isCodecMessage } from './media.ts';
 import { Updater } from './update.ts';
 import { writeLoader } from './overlay-loader.ts';
 import type { Transport } from './net/safe-download.ts';
-import { type Lang, effectiveLang, localize } from './i18n.ts';
+import { type Lang, effectiveLang, localize, tr } from './i18n.ts';
+import { StreamStats, STATS_SCOPES, STATS_EVENTS, STATS_EVENT_TYPES } from './stats.ts';
+import { readObsWsConfig, type ObsWsConfig } from './obs-ws.ts';
+import { writeStatsLoaders, type StatsLoaders } from './overlay-loader.ts';
 
 export interface AppOptions {
   paths: Paths;
@@ -40,6 +43,11 @@ export interface AppOptions {
   appRoot?: string;
   /** Не проверять обновления автоматически (тесты). */
   noAutoUpdateCheck?: boolean;
+  /** Адрес OBS WebSocket (тесты: мок-сервер). */
+  obsHost?: string;
+  obsPollMs?: number;
+  /** Интервалы опроса статистики Twitch (тесты). */
+  statsIntervals?: ConstructorParameters<typeof StreamStats>[0]['intervals'];
 }
 
 /**
@@ -59,6 +67,9 @@ export class App extends EventEmitter {
   readonly hub: Hub;
   readonly finder: MediaFinder;
   readonly updater: Updater;
+  readonly stats: StreamStats;
+  /** Файлы-загрузчики дока и overlay статистики (пусто, если записать не удалось). */
+  statsLoaders: StatsLoaders = { dock: '', overlay: '' };
   readonly startedAt = Date.now();
   port: number;
   private cleanupTimer: NodeJS.Timeout | null = null;
@@ -81,6 +92,7 @@ export class App extends EventEmitter {
       store: opts.store, log: opts.logger.child('auth'), fetchFn: opts.fetchFn, idBase: opts.idBase,
       getClientId: () => this.db.getSettings().clientId,
       wantManage: () => this.db.getSettings().allowManageRewards,
+      optionalScopes: () => STATS_SCOPES,
     });
     this.helix = new HelixClient(this.auth, opts.logger.child('helix'), { fetchFn: opts.fetchFn, base: opts.helixBase });
     this.media = new MediaLibrary(this.db, opts.paths.mediaDir);
@@ -108,6 +120,18 @@ export class App extends EventEmitter {
       journal: (l, t, m) => this.journal(l, t, m),
     });
 
+    this.stats = new StreamStats({
+      log: opts.logger.child('stats'),
+      helix: () => (this.auth.state.status === 'ok' ? this.helix : null),
+      user: () => (this.auth.state.status === 'ok' && this.auth.user?.id ? this.auth.user : null),
+      hasScope: (s) => this.auth.hasScope(s),
+      useObs: () => this.db.getSettings().streamApp === 'obs',
+      obsConfig: () => this.obsWsConfig(),
+      loadSession: () => this.db.getMeta('stats_session'),
+      saveSession: (json) => this.db.setMeta('stats_session', json),
+      obsHost: opts.obsHost, obsPollMs: opts.obsPollMs, intervals: opts.statsIntervals,
+    });
+
     this.eventsub = new EventSubClient({
       log: opts.logger.child('eventsub'), url: opts.eventsubUrl, keepaliveSeconds: opts.eventsubKeepaliveSec ?? 30, backoff: opts.eventsubBackoff,
       subscribe: (sessionId) => this.subscribe(sessionId),
@@ -119,6 +143,36 @@ export class App extends EventEmitter {
   /** Файл-загрузчик overlay: пишется при запуске и при смене языка (служебный текст на языке панели). */
   refreshLoader(): void {
     try { this.loaderPath = writeLoader(this.opts.paths.dataDir, this.port, this.lang); } catch (e) { this.log.warn('Не удалось записать файл-загрузчик overlay', e); }
+    try { this.statsLoaders = writeStatsLoaders(this.opts.paths.dataDir, this.port, this.lang); } catch (e) { this.log.warn('Не удалось записать файлы-загрузчики статистики', e); }
+  }
+
+  /** Куда подключаться к OBS WebSocket: настройки бота, а пустые поля — из настроек самого OBS. */
+  obsWsConfig(): ObsWsConfig & { fileFound: boolean } {
+    const s = this.db.getSettings();
+    const file = readObsWsConfig(s.obsConfigDir);
+    return {
+      port: s.obsWsPort || file?.port || 4455,
+      password: s.obsWsPassword || (file?.authRequired === false ? '' : file?.password ?? ''),
+      // Выключен ли сервер, знаем только из файла OBS; если порт задан вручную — просто пробуем.
+      enabled: s.obsWsPort ? null : file ? file.enabled : null,
+      fromFile: !s.obsWsPassword && !!file,
+      fileFound: !!file,
+    };
+  }
+
+  /** Снимок статистики для дока и overlay (с оформлением overlay и языком). */
+  statsPayload(): Record<string, unknown> {
+    const s = this.db.getSettings();
+    const v = this.stats.view();
+    return {
+      type: 'stats',
+      lang: this.lang,
+      stats: { ...v, obs: { ...v.obs, message: v.obs.message ? tr(v.obs.message, this.lang) : '' } },
+      overlay: {
+        fields: s.statsOverlayFields.split(',').filter(Boolean), layout: s.statsOverlayLayout, style: s.statsOverlayStyle,
+        labels: s.statsOverlayLabels, scale: s.statsOverlayScale,
+      },
+    };
   }
 
   /** Язык панели и служебных сообщений (из настроек; не выбран — русский). */
@@ -148,10 +202,17 @@ export class App extends EventEmitter {
       this.hub.broadcastPanel({ type: 'invalidate', what: 'media' });
     };
 
+    this.hub.getStatsPayload = () => this.statsPayload();
+    this.hub.onStatsClients = (n) => this.stats.setClients(n);
+    this.stats.on('update', () => this.hub.broadcastStats(this.statsPayload()));
+    this.stats.obs.on('state', (st: string, msg: string) => {
+      if (st === 'auth_failed') this.journal('warn', 'obs', `${msg}. Проверьте пароль в «Статистика» → «Подключение к OBS».`);
+    });
+
     this.queue.on('change', (snap) => this.hub.broadcastPanel({ type: 'queue', queue: snap }));
     this.router.on('redemption', () => this.hub.broadcastPanel({ type: 'invalidate', what: 'redemptions' }));
 
-    this.auth.on('state', () => this.pushStatus());
+    this.auth.on('state', () => { this.pushStatus(); this.stats.authChanged(); });
     this.auth.on('logged_in', () => {
       this.syncRewards().catch((e) => this.log.warn('Синхронизация наград не удалась', e));
       this.eventsub.restart();
@@ -163,7 +224,10 @@ export class App extends EventEmitter {
     });
 
     this.eventsub.on('status', () => this.pushStatus());
-    this.eventsub.on('notification', (msg) => { this.router.handleNotification(msg); });
+    this.eventsub.on('notification', (msg) => {
+      if (STATS_EVENT_TYPES.has(msg.metadata?.subscription_type)) { this.stats.handleNotification(msg); return; }
+      this.router.handleNotification(msg);
+    });
     this.eventsub.on('revocation', (msg) => {
       const sub = msg.payload.subscription;
       const reasons: Record<string, string> = {
@@ -197,14 +261,25 @@ export class App extends EventEmitter {
     }
     this.subscribedSessions.add(sessionId);
     if (this.subscribedSessions.size > 20) this.subscribedSessions = new Set([sessionId]);
+    // Подписки статистики — без ожидания и без влияния на награды: нет права — просто пропускаем.
+    void this.subscribeStats(sessionId, user.id);
     // Чистим «мёртвые» websocket-подписки прошлых сессий (best effort, не блокирует).
     this.cleanupSubscriptions(sessionId).catch(() => {});
+  }
+
+  private async subscribeStats(sessionId: string, uid: string): Promise<void> {
+    for (const e of STATS_EVENTS) {
+      if (e.scope && !this.auth.hasScope(e.scope)) continue;
+      try { await this.helix.createEventSubSubscription(e.type, e.version, e.condition(uid), sessionId); } catch (err) {
+        if (!(err instanceof HelixError && err.status === 409)) this.log.info(`Статистика: подписка ${e.type} не создана: ${(err as Error).message}`);
+      }
+    }
   }
 
   private async cleanupSubscriptions(currentSession: string): Promise<void> {
     const subs = await this.helix.getEventSubSubscriptions();
     for (const s of subs) {
-      if (s.transport.method === 'websocket' && s.type === REDEMPTION_TYPE && s.transport.session_id !== currentSession && s.status !== 'enabled') {
+      if (s.transport.method === 'websocket' && (s.type === REDEMPTION_TYPE || STATS_EVENT_TYPES.has(s.type)) && s.transport.session_id !== currentSession && s.status !== 'enabled') {
         await this.helix.deleteEventSubSubscription(s.id).catch(() => {});
       }
     }
@@ -222,7 +297,8 @@ export class App extends EventEmitter {
       if (raw.startsWith(ENC_PREFIX)) {
         try { this.db.setSecretPlain(k, await prot.unprotect(raw.slice(ENC_PREFIX.length))); } catch (e) {
           this.log.warn(`Ключ ${k} не расшифровывается`, e);
-          this.journal('warn', 'settings', `Не удалось расшифровать ключ ${k === 'klipyApiKey' ? 'Klipy' : 'Freesound'} (например, база перенесена с другого компьютера) — вставьте его заново в «Настройки» → «Поиск медиа».`);
+          if (k === 'obsWsPassword') this.journal('warn', 'settings', 'Не удалось расшифровать пароль OBS WebSocket (например, база перенесена с другого компьютера) — введите его заново в «Статистика» → «Подключение к OBS».');
+          else this.journal('warn', 'settings', `Не удалось расшифровать ключ ${k === 'klipyApiKey' ? 'Klipy' : 'Freesound'} (например, база перенесена с другого компьютера) — вставьте его заново в «Настройки» → «Поиск медиа».`);
         }
       } else {
         try { await this.saveSecret(k, raw); } catch (e) { this.log.warn(`Ключ ${k} не удалось зашифровать — остаётся как был`, e); }
@@ -391,6 +467,7 @@ export class App extends EventEmitter {
   async stop(): Promise<void> {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     this.updater.stop();
+    this.stats.stop();
     this.auth.dispose();
     await this.eventsub.stop();
     const left = this.queue.dispose();

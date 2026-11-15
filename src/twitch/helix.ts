@@ -142,4 +142,50 @@ export class HelixClient {
   async deleteEventSubSubscription(id: string): Promise<void> {
     await this.request<void>('DELETE', '/eventsub/subscriptions', { id });
   }
+
+  // ---------------- Статистика канала ----------------
+
+  /** Текущая трансляция канала; null — канал не в эфире. Право не нужно. */
+  async getStream(userId: string): Promise<HelixStream | null> {
+    const r = await this.request<{ data: HelixStream[] }>('GET', '/streams', { user_id: userId, first: '1' });
+    return r.data[0] ?? null;
+  }
+
+  /** Число фолловеров: total отдаётся и без права moderator:read:followers. */
+  async getFollowersTotal(broadcasterId: string): Promise<number> {
+    const r = await this.request<{ total: number }>('GET', '/channels/followers', { broadcaster_id: broadcasterId, first: '1' });
+    return Number(r.total) || 0;
+  }
+
+  /** Подписчики и баллы подписок (право channel:read:subscriptions). */
+  async getSubscriptionsSummary(broadcasterId: string): Promise<{ total: number; points: number }> {
+    const r = await this.request<{ total: number; points: number }>('GET', '/subscriptions', { broadcaster_id: broadcasterId, first: '1' });
+    return { total: Number(r.total) || 0, points: Number(r.points) || 0 };
+  }
+
+  /** Кто сейчас в чате (право moderator:read:chatters). Не больше maxPages × 1000 имён. */
+  async getChatters(broadcasterId: string, moderatorId: string, maxPages = 3): Promise<{ total: number; users: Array<{ login: string; name: string }> }> {
+    const users: Array<{ login: string; name: string }> = [];
+    let total = 0;
+    let after: string | undefined;
+    for (let i = 0; i < maxPages; i++) {
+      const r = await this.request<{ data: Array<{ user_login: string; user_name: string }>; total: number; pagination?: { cursor?: string } }>(
+        'GET', '/chat/chatters', { broadcaster_id: broadcasterId, moderator_id: moderatorId, first: '1000', after });
+      total = Number(r.total) || 0;
+      for (const u of r.data) users.push({ login: u.user_login, name: u.user_name || u.user_login });
+      after = r.pagination?.cursor;
+      if (!after) break;
+    }
+    return { total, users };
+  }
+}
+
+export interface HelixStream {
+  id: string;
+  user_id: string;
+  type: string;
+  title: string;
+  game_name: string;
+  viewer_count: number;
+  started_at: string;
 }

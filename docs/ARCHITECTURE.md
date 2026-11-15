@@ -69,6 +69,8 @@ Twitch **не поддерживает PKCE** (в документации Autho
 | `server/http.ts` | HTTP API, статика, защита (Host/Origin/CSRF, traversal, CSP) |
 | `server/hub.ts` | WebSocket для overlay и панели |
 | `stream-app.ts` | программа для стрима: OBS Studio / Streamlabs Desktop — определение по User-Agent (`OBS/…`, метка `SLD`), путь к exe, резервная копия сцен |
+| `stats.ts` | статистика стрима (1.5.0): Helix (зрители, фолловеры, подписчики, кто в чате) + EventSub (follow, sub, gift, raid, online/offline) + OBS; опрос только пока открыт док/overlay/страница; снимок для `/ws/stats` |
+| `obs-ws.ts` | клиент OBS WebSocket 5 (только чтение: GetStreamStatus, GetStats, GetVideoSettings); пароль и порт — из `plugin_config/obs-websocket/config.json` |
 | `autostart.ts` | автозапуск через `HKCU\...\Run` |
 | `i18n.ts` | английский язык (1.4.0): словарь сообщений сервера «русский шаблон → английский», `tr()` и `localize()` для ответов панели |
 

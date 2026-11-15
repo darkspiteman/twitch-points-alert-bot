@@ -116,6 +116,12 @@ export class Db {
     // 1.4.0: язык. У тех, кто уже пользовался ботом, остаётся русский; новым установкам язык подскажет панель.
     const hasSettings = (this.raw.prepare('SELECT COUNT(*) AS n FROM settings').get() as { n: number }).n > 0;
     if (hasSettings) this.raw.prepare(`INSERT OR IGNORE INTO settings(key, value) VALUES ('language', '"ru"')`).run();
+    // 1.5.0: предел длительности по умолчанию 60 с → 5 мин. Старое значение по умолчанию поднимаем один раз,
+    // выбранное пользователем другое значение не трогаем.
+    if (this.getMeta('max_duration_5min') === null) {
+      this.raw.prepare(`UPDATE settings SET value = '300000' WHERE key = 'maxDurationMs' AND value = '60000'`).run();
+      this.setMeta('max_duration_5min', '1');
+    }
     this.setMeta('schema_version', '3');
   }
 

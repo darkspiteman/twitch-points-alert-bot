@@ -63,6 +63,22 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     overlayLoader: app.loaderPath,
   }));
 
+  // Статистика стрима: снимок и всё для настройки дока и overlay.
+  add('GET', '/api/stats', () => {
+    const cfg = app.obsWsConfig();
+    const s = app.db.getSettings();
+    return {
+      ...app.statsPayload(),
+      setup: {
+        dockLoader: app.statsLoaders.dock, overlayLoader: app.statsLoaders.overlay,
+        dockUrl: `http://127.0.0.1:${app.port}/stats/dock`, overlayUrl: `http://127.0.0.1:${app.port}/stats/overlay`,
+        streamApp: s.streamApp,
+        obs: { fileFound: cfg.fileFound, enabled: cfg.enabled, port: cfg.port, passwordFromFile: cfg.fromFile, passwordSet: !!s.obsWsPassword, portManual: s.obsWsPort },
+        clients: app.hub.statsClientCount,
+      },
+    };
+  });
+
   add('POST', '/api/auth/login', async () => app.auth.startLogin());
   add('POST', '/api/auth/cancel', () => { app.auth.cancelLogin(); return { ok: true }; });
   add('POST', '/api/auth/logout', async () => { await app.auth.logout(); return { ok: true }; });
@@ -108,6 +124,12 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       app.hub.broadcastPanel({ type: 'invalidate', what: 'language' }); // другие открытые панели тоже переключатся
     }
     if (ok.mode !== undefined) app.journal('info', 'settings', after.mode === 'observe' ? 'Включён режим наблюдения: оповещения не воспроизводятся' : 'Включён активный режим: оповещения воспроизводятся');
+    if (ok.obsWsPassword !== undefined) {
+      note = ok.obsWsPassword ? 'Пароль OBS WebSocket сохранён.' : 'Пароль OBS WebSocket удалён — бот возьмёт его из настроек OBS.';
+      app.journal('info', 'settings', note);
+    }
+    if (ok.obsWsPassword !== undefined || ok.obsWsPort !== undefined || ok.streamApp !== undefined || ok.obsConfigDir !== undefined) app.stats.syncObs(true);
+    if (Object.keys(ok).some((k) => k.startsWith('statsOverlay')) || ok.language !== undefined) app.hub.broadcastStats(app.statsPayload());
     if (ok.klipyApiKey !== undefined || ok.freesoundApiKey !== undefined) {
       app.finder.registerKeys();
       const which = [ok.klipyApiKey !== undefined ? 'Klipy' : '', ok.freesoundApiKey !== undefined ? 'Freesound' : ''].filter(Boolean).join(' и ');
@@ -146,7 +168,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       if (!Number.isFinite(v) || v < min || v > max) throw new HttpError(400, `Неверное значение ${k}: допустимо от ${min} до ${max}`);
       cfg[k] = Math.round(v);
     };
-    int('volume', 0, 100); int('duration_ms', 0, 600000); int('delay_ms', 0, 60000); int('cooldown_sec', 0, 86400);
+    int('volume', 0, 100); int('duration_ms', 0, 3600000); int('delay_ms', 0, 60000); int('cooldown_sec', 0, 86400);
     for (const k of ['bot_enabled', 'show_caption', 'chroma_key']) if (b[k] !== undefined) cfg[k] = b[k] ? 1 : 0;
     if (b.play_mode !== undefined) {
       if (b.play_mode !== 'video' && b.play_mode !== 'audio') throw new HttpError(400, 'Неверный режим воспроизведения');
@@ -382,6 +404,8 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       if (url.pathname === '/' ) { res.writeHead(302, { Location: '/panel/' }); res.end(); return; }
       if (url.pathname === '/overlay' || url.pathname === '/overlay/') return serveStatic(res, path.join(PUBLIC_DIR, 'overlay'), 'index.html', req);
       if (url.pathname.startsWith('/overlay/')) return serveStatic(res, path.join(PUBLIC_DIR, 'overlay'), url.pathname.slice('/overlay/'.length), req);
+      if (url.pathname === '/stats/dock' || url.pathname === '/stats/overlay') return serveStatic(res, path.join(PUBLIC_DIR, 'stats'), url.pathname.slice('/stats/'.length) + '.html', req);
+      if (url.pathname.startsWith('/stats/')) return serveStatic(res, path.join(PUBLIC_DIR, 'stats'), url.pathname.slice('/stats/'.length), req);
       if (url.pathname === '/panel') { res.writeHead(302, { Location: '/panel/' }); res.end(); return; }
       if (url.pathname.startsWith('/panel/')) return serveStatic(res, path.join(PUBLIC_DIR, 'panel'), url.pathname.slice('/panel/'.length) || 'index.html', req);
       if (url.pathname.startsWith('/media/')) return serveMedia(app, req, res, url.pathname.slice('/media/'.length));

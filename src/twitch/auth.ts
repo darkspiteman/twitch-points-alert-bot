@@ -35,6 +35,8 @@ export interface AuthOptions {
   getClientId: () => string;
   /** Нужно ли право управлять наградами (создание копий, статусы). */
   wantManage: () => boolean;
+  /** Необязательные права (статистика): запрашиваются при входе, но без них вход не считается ошибкой. */
+  optionalScopes?: () => string[];
   fetchFn?: FetchFn;
   idBase?: string;
   now?: () => number;
@@ -70,6 +72,8 @@ export class TwitchAuth extends EventEmitter {
   hasScope(s: string): boolean { return this.scopes.includes(s) || (s === SCOPE_READ && this.scopes.includes(SCOPE_MANAGE)); }
 
   requiredScopes(): string[] { return this.opts.wantManage() ? [SCOPE_MANAGE] : [SCOPE_READ]; }
+  /** Что просить при входе: обязательные права и необязательные (статистика). */
+  requestedScopes(): string[] { return [...new Set([...this.requiredScopes(), ...(this.opts.optionalScopes?.() ?? [])])]; }
 
   private setState(s: AuthState): void {
     this._state = s;
@@ -209,7 +213,7 @@ export class TwitchAuth extends EventEmitter {
     const clientId = this.opts.getClientId();
     if (!clientId) { this.setState({ status: 'no_client_id', message: 'Сначала укажите Client ID в настройках' }); return this._state; }
     this.cancelLogin();
-    const scopes = this.requiredScopes().join(' ');
+    const scopes = this.requestedScopes().join(' ');
     const res = await this.fetchFn(`${this.idBase}/oauth2/device`, {
       method: 'POST', body: new URLSearchParams({ client_id: clientId, scopes }), headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });

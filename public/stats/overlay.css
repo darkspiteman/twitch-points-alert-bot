@@ -1,0 +1,36 @@
+/* Статистика на экране стрима. Масштаб — переменная --scale (из настроек панели). */
+/* color-scheme как у панели: иначе предпросмотр в панели (iframe) получает непрозрачный белый фон. */
+:root { --scale: 1; color-scheme: dark; }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body { font: 600 calc(18px * var(--scale))/1.2 "Segoe UI", system-ui, sans-serif; padding: calc(10px * var(--scale)); }
+
+.bar { display: inline-flex; gap: calc(8px * var(--scale)); }
+.bar.row { flex-direction: row; flex-wrap: wrap; }
+.bar.column { flex-direction: column; }
+.bar[hidden] { display: none; }
+
+.cell { display: flex; align-items: center; gap: calc(8px * var(--scale)); padding: calc(7px * var(--scale)) calc(12px * var(--scale)); border-radius: calc(8px * var(--scale)); }
+.ic { width: calc(22px * var(--scale)); height: calc(22px * var(--scale)); flex: none; }
+.txt { display: flex; flex-direction: column; }
+.val { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lab { font-size: .62em; font-weight: 500; opacity: .75; white-space: nowrap; }
+
+/* Тёмный */
+.dark .cell { background: rgba(14, 14, 20, .78); color: #fff; }
+.dark .ic { color: #b58cff; }
+/* Светлый */
+.light .cell { background: rgba(255, 255, 255, .9); color: #18181b; box-shadow: 0 2px 8px rgba(0, 0, 0, .2); }
+.light .ic { color: #7c3aed; }
+/* Без фона (текст с тенью) */
+.clear .cell { background: none; color: #fff; padding-left: 0; text-shadow: 0 1px 3px #000, 0 0 8px rgba(0, 0, 0, .8); }
+.clear .ic { color: #fff; filter: drop-shadow(0 1px 2px #000); }
+/* Фиолетовый, как Twitch */
+.twitch .cell { background: linear-gradient(135deg, rgba(145, 71, 255, .92), rgba(100, 65, 165, .92)); color: #fff; }
+.twitch .ic { color: #fff; }
+
+.cell.h-good .val { color: #3dd68c; }
+.cell.h-warn .val { color: #ffb547; }
+.cell.h-bad .val { color: #ff5c5c; }
+.light .cell.h-good .val { color: #0a8a50; }
+.light .cell.h-warn .val { color: #b26a00; }
+.light .cell.h-bad .val { color: #c62828; }

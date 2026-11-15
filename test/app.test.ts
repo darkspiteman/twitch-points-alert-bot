@@ -40,6 +40,9 @@ async function startApp(opts: { dir?: string; twitch?: MockTwitch; es?: MockEven
   return ctx;
 }
 
+/** Сколько раз создавалась подписка на погашения (подписки статистики — отдельно). */
+const redemptionSubs = (t: MockTwitch) => t.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/eventsub/subscriptions') && JSON.parse(c.body ?? '{}').type === 'channel.channel_points_custom_reward_redemption.add').length;
+
 /** Настроенная награда с медиафайлом. */
 function addReward(app: App, id = 'reward-1', over: { manageable?: boolean; enabled?: boolean } = {}) {
   app.db.upsertTwitchReward({ id, title: `Награда ${id}`, cost: 100, prompt: '', manageable: over.manageable ?? false, is_enabled: true, background_color: '', raw: {} });
@@ -74,7 +77,7 @@ test('полный путь: EventSub notification → очередь → overla
   addReward(app);
   const ov = await overlay(port);
   await waitFor(() => app.eventsub.status.state === 'connected');
-  assert.equal(twitch.count('POST', '/eventsub/subscriptions'), 1);
+  assert.equal(redemptionSubs(twitch), 1);
   const sub = JSON.parse(twitch.calls.find((c) => c.method === 'POST' && c.url.endsWith('/eventsub/subscriptions'))!.body!);
   assert.equal(sub.type, 'channel.channel_points_custom_reward_redemption.add');
   assert.equal(sub.version, '1');
@@ -173,7 +176,7 @@ test('полный разрыв EventSub → новая сессия, подпи
     return json(200, { data: [{ id: 'missed-1', user_id: '5', user_login: 'late', user_name: 'Late', user_input: '', status: 'UNFULFILLED', redeemed_at: missedAt(), reward: { id: 'own', title: 'Своя', prompt: '', cost: 10 } }] });
   });
   es.last.terminate(); // обрыв
-  await waitFor(() => twitch.count('POST', '/eventsub/subscriptions') === 2 && app.eventsub.status.state === 'connected');
+  await waitFor(() => redemptionSubs(twitch) === 2 && app.eventsub.status.state === 'connected');
   await waitFor(() => statusOf(app, "missed-1") === "done");
   assert.equal(ov.plays.length, 1);
   const gap = app.db.recentEvents().find((e) => e.type === 'gap');

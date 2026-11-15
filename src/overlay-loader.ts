@@ -24,9 +24,21 @@ const LOADER_TEXT = {
   en: { title: 'Twitch Alert Bot — overlay loader', waiting: 'Waiting for Twitch Alert Bot to start (port ' },
 };
 
-export function loaderHtml(port: number, lang: 'ru' | 'en' = 'ru'): string {
+/** Что открывает загрузчик: overlay оповещений, док статистики (текст ожидания виден и в OBS) или overlay статистики. */
+export type LoaderKind = 'overlay' | 'stats-dock' | 'stats-overlay';
+const LOADER_TARGET: Record<LoaderKind, string> = { overlay: '/overlay?via=file', 'stats-dock': '/stats/dock?via=file', 'stats-overlay': '/stats/overlay?via=file' };
+const LOADER_TITLE: Record<LoaderKind, { ru: string; en: string }> = {
+  overlay: { ru: LOADER_TEXT.ru.title, en: LOADER_TEXT.en.title },
+  'stats-dock': { ru: 'Twitch Alert Bot — загрузчик панели статистики', en: 'Twitch Alert Bot — stats dock loader' },
+  'stats-overlay': { ru: 'Twitch Alert Bot — загрузчик overlay статистики', en: 'Twitch Alert Bot — stats overlay loader' },
+};
+export const STATS_DOCK_FILE = 'stats-dock.html';
+export const STATS_OVERLAY_FILE = 'stats-overlay.html';
+export interface StatsLoaders { dock: string; overlay: string }
+
+export function loaderHtml(port: number, lang: 'ru' | 'en' = 'ru', kind: LoaderKind = 'overlay'): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`Неверный порт: ${port}`);
-  const L = LOADER_TEXT[lang === 'en' ? 'en' : 'ru'];
+  const L = { ...LOADER_TEXT[lang === 'en' ? 'en' : 'ru'], title: LOADER_TITLE[kind][lang === 'en' ? 'en' : 'ru'] };
   return `<!doctype html>
 <html lang="${lang === 'en' ? 'en' : 'ru'}">
 <head>
@@ -49,12 +61,12 @@ export function loaderHtml(port: number, lang: 'ru' | 'en' = 'ru'): string {
 (function () {
   'use strict';
   var PORT = ${port};
-  var TARGET = 'http://127.0.0.1:' + PORT + '/overlay?via=file';
+  var TARGET = 'http://127.0.0.1:' + PORT + '${LOADER_TARGET[kind]}';
   var ua = navigator.userAgent || '';
   var inStreamApp = typeof window.obsstudio !== 'undefined' || /\\bOBS\\/|\\bSLD\\b|Streamlabs/i.test(ua);
   var s = document.getElementById('s');
   // В OBS/Streamlabs ничего не показываем (зрители не должны видеть служебный текст).
-  if (!inStreamApp) s.style.display = 'block';
+  ${kind === 'stats-dock' ? "s.style.display = 'block'; // док виден только стримеру" : "if (!inStreamApp) s.style.display = 'block';"}
   s.textContent = ${JSON.stringify(L.waiting)} + PORT + ')…';
   var attempt = 0;
   var done = false;
@@ -107,9 +119,17 @@ export function loaderHtml(port: number, lang: 'ru' | 'en' = 'ru'): string {
 }
 
 /** Записывает загрузчик в папку данных (только если содержимое изменилось). Возвращает полный путь к файлу. */
-export function writeLoader(dir: string, port: number, lang: 'ru' | 'en' = 'ru'): string {
-  const file = path.join(dir, LOADER_FILE);
-  const html = loaderHtml(port, lang);
+/** Загрузчики дока и overlay статистики (data\stats-dock.html и data\stats-overlay.html). */
+export function writeStatsLoaders(dir: string, port: number, lang: 'ru' | 'en' = 'ru'): StatsLoaders {
+  return {
+    dock: writeLoader(dir, port, lang, 'stats-dock', STATS_DOCK_FILE),
+    overlay: writeLoader(dir, port, lang, 'stats-overlay', STATS_OVERLAY_FILE),
+  };
+}
+
+export function writeLoader(dir: string, port: number, lang: 'ru' | 'en' = 'ru', kind: LoaderKind = 'overlay', name = LOADER_FILE): string {
+  const file = path.join(dir, name);
+  const html = loaderHtml(port, lang, kind);
   let current = '';
   try { current = fs.readFileSync(file, 'utf8'); } catch { /* файла ещё нет */ }
   if (current !== html) {

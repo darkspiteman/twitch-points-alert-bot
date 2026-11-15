@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twitch Alert Bot — Stats</title>
+<link rel="stylesheet" href="/stats/dock.css">
+</head>
+<body>
+<header id="top">
+  <div id="live" class="live off"><span class="dot"></span><span id="live-text"></span></div>
+  <div id="session" class="session">—</div>
+  <div id="health" class="health" hidden></div>
+  <button id="gear" class="gear" type="button" aria-label="Settings">⚙</button>
+</header>
+<div id="tiles-menu" class="menu" hidden></div>
+<div id="notes"></div>
+<main id="tiles" class="tiles"></main>
+<section class="lists">
+  <div class="list">
+    <h2 id="feed-title"></h2>
+    <ul id="feed"></ul>
+  </div>
+  <div class="list">
+    <h2 id="chat-title"></h2>
+    <ul id="chat" class="chat"></ul>
+  </div>
+</section>
+<div id="conn" class="conn" hidden></div>
+<script src="/stats/common.js"></script>
+<script src="/stats/dock.js"></script>
+</body>
+</html>

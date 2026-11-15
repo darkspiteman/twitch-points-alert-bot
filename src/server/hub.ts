@@ -34,6 +34,8 @@ export class Hub implements OverlayTransport {
   private overlayWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   private probeWss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   private panelWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  private statsWss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 });
+  private statsClients = new Set<WebSocket>();
   private overlays = new Map<string, OverlayClient>();
   private panels = new Set<WebSocket>();
   private heartbeat: NodeJS.Timeout;
@@ -49,6 +51,9 @@ export class Hub implements OverlayTransport {
   panelTransform: (msg: unknown) => unknown = (m) => m;
   /** Overlay не смог загрузить онлайн-медиа и сыграл запасной звук. */
   onOverlayFallback: (itemId: string, message: string) => void = () => {};
+  /** Статистика стрима: снимок для нового экрана и число открытых экранов (док, overlay, страница панели). */
+  getStatsPayload: () => unknown = () => ({ type: 'stats' });
+  onStatsClients: (count: number) => void = () => {};
 
   constructor(log: ScopedLogger, getView: () => OverlayView, allowedOrigins: () => string[]) {
     this.log = log;
@@ -56,6 +61,7 @@ export class Hub implements OverlayTransport {
     this.allowedOrigins = allowedOrigins;
     this.overlayWss.on('connection', (ws, req) => this.onOverlay(ws, req));
     this.panelWss.on('connection', (ws) => this.onPanel(ws));
+    this.statsWss.on('connection', (ws) => this.onStats(ws));
     // Проверка «бот запущен?» для файла-загрузчика: ответ и сразу закрытие, никаких данных бота.
     this.probeWss.on('connection', (ws) => { ws.on('error', () => {}); ws.send(JSON.stringify({ type: 'ready', app: 'twitch-alert-bot' }), () => ws.close(1000)); });
     this.heartbeat = setInterval(() => this.beat(), 15_000);
@@ -74,6 +80,7 @@ export class Hub implements OverlayTransport {
     if (url.pathname === '/ws/overlay') this.overlayWss.handleUpgrade(req, socket, head, (ws) => this.overlayWss.emit('connection', ws, req));
     else if (url.pathname === '/ws/probe') this.probeWss.handleUpgrade(req, socket, head, (ws) => this.probeWss.emit('connection', ws, req));
     else if (url.pathname === '/ws/panel') this.panelWss.handleUpgrade(req, socket, head, (ws) => this.panelWss.emit('connection', ws, req));
+    else if (url.pathname === '/ws/stats') this.statsWss.handleUpgrade(req, socket, head, (ws) => this.statsWss.emit('connection', ws, req));
     else { socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); }
   }
 
@@ -127,6 +134,23 @@ export class Hub implements OverlayTransport {
     this.send(ws, { type: 'hello' });
   }
 
+  /** Док и overlay статистики: только получают данные (входящие сообщения игнорируются). */
+  private onStats(ws: WebSocket): void {
+    this.statsClients.add(ws);
+    ws.on('close', () => { this.statsClients.delete(ws); this.onStatsClients(this.statsClients.size); });
+    ws.on('error', () => {});
+    this.send(ws, this.getStatsPayload());
+    this.onStatsClients(this.statsClients.size);
+  }
+
+  get statsClientCount(): number { return this.statsClients.size; }
+
+  broadcastStats(msg: unknown): void {
+    if (!this.statsClients.size) return;
+    const text = JSON.stringify(msg);
+    for (const c of this.statsClients) if (c.readyState === WebSocket.OPEN) { try { c.send(text); } catch { /* */ } }
+  }
+
   private beat(): void {
     for (const c of this.overlays.values()) {
       if (!c.alive) { this.log.warn(`Overlay ${c.id} не отвечает — соединение закрыто`); c.ws.terminate(); continue; }
@@ -135,6 +159,7 @@ export class Hub implements OverlayTransport {
       this.send(c.ws, { type: 'ping' });
     }
     for (const p of this.panels) { try { p.ping(); } catch { /* */ } }
+    for (const c of this.statsClients) { try { c.ping(); } catch { /* */ } }
   }
 
   private send(ws: WebSocket, msg: unknown): void {
@@ -189,6 +214,7 @@ export class Hub implements OverlayTransport {
     clearInterval(this.heartbeat);
     for (const c of this.overlays.values()) { try { c.ws.close(1001, 'shutdown'); } catch { /* */ } }
     for (const p of this.panels) { try { p.close(1001, 'shutdown'); } catch { /* */ } }
-    await Promise.all([this.overlayWss, this.panelWss, this.probeWss].map((w) => new Promise((r) => w.close(() => r(null)))));
+    for (const c of this.statsClients) { try { c.close(1001, 'shutdown'); } catch { /* */ } }
+    await Promise.all([this.overlayWss, this.panelWss, this.probeWss, this.statsWss].map((w) => new Promise((r) => w.close(() => r(null)))));
   }
 }

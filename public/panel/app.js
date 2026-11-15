@@ -138,7 +138,7 @@
   }
 
   // ---------------- язык ----------------
-  var NAV = { home: 'Главная', rewards: 'Награды', media: 'Медиа', find: 'Найти медиа', settings: 'Настройки', log: 'Журнал', help: 'Помощь', support: '❤ Поддержать автора' };
+  var NAV = { home: 'Главная', rewards: 'Награды', media: 'Медиа', find: 'Найти медиа', stats: 'Статистика', settings: 'Настройки', log: 'Журнал', help: 'Помощь', support: '❤ Поддержать автора' };
   var langAutoSaved = false;
 
   /** Язык из настроек бота. Не выбран (новая установка) — подбираем по языку браузера и сохраняем выбор. */
@@ -196,6 +196,7 @@
     else if (page === 'media') renderMedia();
     else if (page === 'find') renderFind();
     else if (page === 'support') renderSupport();
+    else if (page === 'stats') renderStats();
     else if (page === 'settings') renderSettings();
     else if (page === 'log') renderLog();
     else if (page === 'help') renderHelp();
@@ -1256,7 +1257,7 @@
           settingField(T('Не проигрывать старше, с'), 'maxItemAgeSec', { type: 'number', min: 10, hint: T('Слишком старые оповещения отбрасываются') }),
           settingField(T('Антиспам: один зритель не чаще, с'), 'userCooldownSec', { type: 'number', min: 0, hint: T('0 — без ограничения') }),
           settingField(T('Длительность картинки/GIF, с'), 'defaultImageDurationMs', { type: 'number', scale: 1000, min: 0.5, step: 0.5 }),
-          settingField(T('Максимальная длительность, с'), 'maxDurationMs', { type: 'number', scale: 1000, min: 1 }))),
+          settingField(T('Максимальная длительность, с'), 'maxDurationMs', { type: 'number', scale: 1000, min: 1, max: 3600, hint: T('Видео и звук длиннее обрываются на этом месте (до 3600 с = 1 час)') }))),
       h('div', { class: 'card' }, h('h2', { text: T('Поведение') }),
         settingField(T('Только звук для всех наград (видео выключено)'), 'audioOnly', { type: 'check', hint: T('Быстрый общий выключатель видео, например для игровых сцен. Настройки наград при этом не меняются.') }),
         settingField(T('Режим работы'), 'mode', { type: 'select', options: [['active', T('Активный — воспроизводить оповещения')], ['observe', T('Наблюдение — только записывать (для параллельной работы с Sound Alerts)')]] }),
@@ -1318,6 +1319,133 @@
 
   // ---------------- Журнал ----------------
   var logTab = 'events';
+  // ---------------- Статистика ----------------
+  var ST = null;          // ответ /api/stats
+  var statsTimer = 0;
+  var OVERLAY_FIELDS = [
+    ['session', 'Время эфира'], ['viewers', 'Зрители'], ['chatters', 'В чате'], ['followers', 'Фолловеры'], ['followersSession', 'Новые фолловеры за стрим'],
+    ['subs', 'Подписчики'], ['subPoints', 'Баллы подписок'], ['bitrate', 'Битрейт'], ['resolution', 'Разрешение и FPS'], ['dropped', 'Потери кадров'], ['health', 'Состояние трансляции'],
+  ];
+
+  function fileUrl(p) { return p ? 'file:///' + encodeURI(p.replace(/\\/g, '/')) : ''; }
+
+  function loadStats() {
+    return api('GET', '/api/stats').then(function (r) { ST = r; if (page === 'stats') renderStatsStatus(); }, function () { /* нет связи — баннер покажет */ });
+  }
+
+  /** Состояние подключений (обновляется раз в 4 с, пока страница открыта). */
+  function obsStateView() {
+    var o = ST.stats.obs;
+    var su = ST.setup.obs;
+    if (ST.setup.streamApp !== 'obs') return { cls: 'warn', text: T('Только OBS Studio'), detail: T('Время, зрители, чат, фолловеры и подписчики работают и со Streamlabs, а битрейт, разрешение и потери кадров бот берёт из OBS Studio.') };
+    if (o.state === 'ok') return { cls: 'ok', text: T('Подключено'), detail: o.streaming ? T('Идёт трансляция') : T('OBS подключён, трансляция не идёт') };
+    if (o.state === 'off') return { cls: 'warn', text: T('Ждёт'), detail: T('Подключение начнётся, когда открыта док-панель, overlay статистики или эта страница.') };
+    if (o.state === 'disabled' || (su.fileFound && su.enabled === false)) return { cls: 'bad', text: T('Сервер WebSocket выключен'), detail: T('Включите его в OBS (шаги ниже).') };
+    if (o.state === 'auth_failed') return { cls: 'bad', text: T('Неверный пароль'), detail: T('Скопируйте пароль из OBS и вставьте ниже.') };
+    return { cls: 'warn', text: T('Нет связи с OBS'), detail: T('OBS не запущен или сервер WebSocket недоступен (порт {0}).', [su.port]) };
+  }
+
+  /** Пароль OBS WebSocket: поле всегда пустое (сохранённый пароль в панель не приходит). */
+  function obsPasswordField(su) {
+    var inp = h('input', { type: 'password', autocomplete: 'off', placeholder: su.obs.passwordSet ? T('сохранён') : su.obs.fileFound ? T('берётся из настроек OBS') : '' });
+    inp.addEventListener('change', function () { if (inp.value) saveSetting('obsWsPassword', inp.value).then(function () { inp.value = ''; loadStats(); }); });
+    return h('div', { class: 'field' }, h('label', { text: T('Пароль WebSocket (если бот не нашёл сам)') }), inp,
+      su.obs.passwordSet ? h('button', { class: 'small', style: 'margin-top:4px', text: T('Брать пароль из OBS'), onclick: function () { saveSetting('obsWsPassword', '').then(function () { loadStats().then(renderStats); }); } }) : null);
+  }
+
+  function renderStatsStatus() {
+    var box = $('stats-status');
+    if (!box || !ST) return;
+    clear(box);
+    var a = S.status.auth;
+    var miss = ST.stats.missingScopes || [];
+    var tw = a.status !== 'ok' ? { cls: 'bad', text: T('Не подключено'), detail: T('Войдите в Twitch в «Настройках».') }
+      : miss.length ? { cls: 'warn', text: T('Не все права'), detail: T('Нет прав: {0}. Нажмите «Войти заново» — Twitch спросит разрешение на статистику.', [miss.join(', ')]) }
+        : { cls: 'ok', text: T('Подключено'), detail: T('Зрители, чат, фолловеры, подписчики') };
+    box.appendChild(h('div', { class: 'grid cols-2' },
+      statCard('OBS WebSocket', obsStateView()),
+      statCard('Twitch', tw, a.status === 'ok' && miss.length ? [h('button', { class: 'small primary', text: T('Войти заново'), onclick: function () { act(post('/api/auth/login')).then(function () { location.hash = '#settings'; }); } })] : null)));
+  }
+
+  function renderStats() {
+    var root = clear($('page-stats'));
+    root.appendChild(h('h1', { text: T('Статистика стрима') }));
+    if (!ST) { root.appendChild(h('p', { class: 'muted', text: T('Загрузка…') })); loadStats().then(function () { if (page === 'stats') renderStats(); }); return; }
+    var su = ST.setup;
+    root.appendChild(h('p', { class: 'muted', text: T('Время эфира, зрители, кто в чате, фолловеры, подписчики, битрейт и потери кадров — в реальном времени: в док-панели OBS и, если хотите, прямо на экране стрима.') }));
+    root.appendChild(h('div', { id: 'stats-status' }));
+
+    // Живой предпросмотр док-панели.
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Предпросмотр док-панели') }),
+      h('iframe', { class: 'stats-dock-frame', src: '/stats/dock?embed=1', title: T('Предпросмотр док-панели') })));
+
+    // Док в OBS.
+    var dockFile = fileUrl(su.dockLoader);
+    root.appendChild(h('div', { class: 'grid cols-2' },
+      h('div', { class: 'card' }, h('h2', { text: T('1. Док-панель в OBS') }),
+        h('ol', null,
+          h('li', { text: T('В OBS откройте меню «Док-панели» → «Пользовательские док-панели браузера…».') }),
+          h('li', { text: T('В пустой строке: имя — «Статистика», адрес — скопируйте сюда:') })),
+        dockFile ? copyField(dockFile, T('Адрес скопирован')) : null,
+        h('ol', { start: '3' },
+          h('li', { text: T('Нажмите «Применить». Появится окно — перетащите его к краю OBS, рядом с «Микшером» или «Сценами».') }),
+          h('li', { text: T('Значок ⚙ в доке — какие плитки показывать.') })),
+        h('div', { class: 'field' }, h('label', { text: T('Если адрес файла не открывается — используйте этот (тогда запускайте бота раньше OBS):') }),
+          copyField(su.dockUrl, T('Адрес скопирован'), h('a', { class: 'btn', href: '/stats/dock', target: '_blank', text: T('Открыть') })))),
+      h('div', { class: 'card' }, h('h2', { text: T('2. Подключение к OBS') }),
+        h('p', { class: 'small', text: T('Битрейт, разрешение, потери кадров и точное время эфира бот берёт прямо из OBS — через встроенный в OBS сервер WebSocket. Бот только читает данные и ничего в OBS не меняет.') }),
+        h('ol', null,
+          h('li', { text: T('В OBS: меню «Сервис» → «Настройки сервера WebSocket».') }),
+          h('li', { text: T('Поставьте галочку «Включить сервер WebSocket» и нажмите «Применить».') }),
+          h('li', { text: su.obs.fileFound ? T('Пароль вводить не нужно — бот прочитает его из настроек OBS сам.') : T('Нажмите «Показать сведения о подключении», скопируйте пароль и вставьте ниже.') })),
+        h('div', { class: 'form-grid' },
+          obsPasswordField(su),
+          settingField(T('Порт (0 — как в OBS)'), 'obsWsPort', { type: 'number', min: 0, max: 65535 })))));
+
+    // Overlay на экране стрима.
+    var s = S.settings;
+    var chosen = String(s.statsOverlayFields || '').split(',').filter(Boolean);
+    var checks = h('div', { class: 'stats-fields' }, OVERLAY_FIELDS.map(function (f) {
+      var cb = h('input', { type: 'checkbox', checked: chosen.indexOf(f[0]) >= 0 });
+      cb.addEventListener('change', function () {
+        var cur = OVERLAY_FIELDS.map(function (x) { return x[0]; }).filter(function (id) {
+          return id === f[0] ? cb.checked : chosen.indexOf(id) >= 0;
+        });
+        chosen = cur;
+        saveSetting('statsOverlayFields', cur.join(','));
+      });
+      return h('label', { class: 'check' }, cb, T(f[1]));
+    }));
+    var overlayFile = su.overlayLoader;
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('3. На экране стрима (по желанию)') }),
+      h('p', { class: 'small muted', text: T('Зрители увидят выбранные показатели поверх стрима. Изменения применяются сразу — источник в OBS трогать не нужно.') }),
+      checks,
+      h('div', { class: 'form-grid' },
+        settingField(T('Расположение'), 'statsOverlayLayout', { type: 'select', options: [['row', T('В строку')], ['column', T('В столбик')]] }),
+        settingField(T('Стиль'), 'statsOverlayStyle', { type: 'select', options: [['dark', T('Тёмный')], ['light', T('Светлый')], ['clear', T('Без фона')], ['twitch', T('Фиолетовый')]] }),
+        settingField(T('Размер, %'), 'statsOverlayScale', { type: 'number', min: 50, max: 300 })),
+      settingField(T('Подписи под числами'), 'statsOverlayLabels', { type: 'check' }),
+      h('div', { class: 'stats-overlay-preview' }, h('iframe', { src: '/stats/overlay', title: T('Предпросмотр overlay статистики') })),
+      h('ol', null,
+        h('li', { text: T('В OBS в нужной сцене: «+» в «Источниках» → «Браузер». Название: «Статистика».') }),
+        h('li', { text: T('Поставьте галочку «Локальный файл» и выберите файл (путь можно вставить в строку «Имя файла»):') })),
+      overlayFile ? copyField(overlayFile, T('Путь скопирован')) : copyField(su.overlayUrl, T('Адрес скопирован')),
+      h('ol', { start: '3' },
+        h('li', { text: T('Ширина 1920, высота 300 (для столбика — 400 × 800). Нажмите «ОК» и перетащите источник куда удобно.') })),
+      overlayFile ? h('div', { class: 'field' }, h('label', { text: T('Или адрес (URL) — тогда запускайте бота раньше OBS:') }), copyField(su.overlayUrl, T('Адрес скопирован'))) : null));
+
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Откуда берутся цифры') }),
+      h('ul', null,
+        h('li', { text: T('Время эфира, битрейт, разрешение, потери кадров, CPU — из OBS, обновляются каждые 2 секунды.') }),
+        h('li', { text: T('Зрители — счётчик Twitch: сам Twitch обновляет его с задержкой 1–2 минуты, быстрее его не получить никому.') }),
+        h('li', { text: T('«В чате» — кто сейчас на стриме и вошёл в Twitch, даже если молчит (без ботов и вас). Это число обычно появляется раньше счётчика зрителей; новые люди подсвечиваются в доке.') }),
+        h('li', { text: T('Фолловеры, подписки, подарки и рейды приходят от Twitch мгновенно и сразу видны в ленте событий.') }))));
+
+    renderStatsStatus();
+    clearInterval(statsTimer);
+    statsTimer = setInterval(function () { if (page !== 'stats') { clearInterval(statsTimer); return; } loadStats(); }, 4000);
+  }
+
   function renderLog() {
     var root = clear($('page-log'));
     root.appendChild(h('h1', { text: T('Журнал') }));

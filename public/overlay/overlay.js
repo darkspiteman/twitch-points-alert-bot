@@ -259,7 +259,7 @@
     if (item.durationMs > 0) state.timers.push(setTimeout(function () { finish(state, null, false); }, item.durationMs));
     else if (state.media.length === 0) state.timers.push(setTimeout(function () { finish(state, null, false); }, 5000));
     // Жёсткий предел длительности.
-    state.timers.push(setTimeout(function () { finish(state, null, false); }, item.maxDurationMs || 60000));
+    state.timers.push(setTimeout(function () { finish(state, null, false); }, item.maxDurationMs || 300000));
     // Если медиа не начало играть за 10 с — считаем ошибкой (повреждённый/зависший файл).
     if (state.media.length) state.timers.push(setTimeout(function () { if (!started && !state.done) fail('файл не начал воспроизводиться за 10 секунд'); }, 10000));
   }
