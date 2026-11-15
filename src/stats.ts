@@ -1,8 +1,9 @@
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { ScopedLogger } from './logger.ts';
 import { HelixError, type HelixClient } from './twitch/helix.ts';
 import type { EventSubMessage } from './twitch/eventsub.ts';
-import { ObsClient, type ObsSample, type ObsState, type ObsWsConfig } from './obs-ws.ts';
+import { ObsClient, type ObsMic, type ObsSample, type ObsState, type ObsWsConfig } from './obs-ws.ts';
 
 /**
  * Статистика стрима для док-панели OBS и overlay на экране (1.5.0).
@@ -11,6 +12,8 @@ import { ObsClient, type ObsSample, type ObsState, type ObsWsConfig } from './ob
  *  • OBS WebSocket (мгновенно): время трансляции, битрейт, разрешение, FPS, потерянные кадры, CPU;
  *  • Twitch Helix (опрос раз в 15–120 с): зрители, кто в чате, фолловеры, подписчики и баллы подписок;
  *  • Twitch EventSub (мгновенно): новые фолловеры, подписки, подарки, рейды, начало и конец эфира.
+ * 1.6.0: тревога «микрофон выключен», «впервые на канале» / «был N раз» у зрителей чата, награды за баллы в ленте,
+ * итоги каждого стрима (сохраняются в базе, история — в панели).
  * Twitch и OBS опрашиваются только пока открыт хотя бы один экран статистики (док, overlay или панель).
  */
 
@@ -41,8 +44,44 @@ export const KNOWN_BOTS = new Set([
 
 export const OVERLAY_FIELDS = ['session', 'viewers', 'chatters', 'followers', 'followersSession', 'subs', 'subPoints', 'bitrate', 'resolution', 'dropped', 'health'] as const;
 
-export type FeedKind = 'follow' | 'sub' | 'resub' | 'gift' | 'raid' | 'join';
-export interface FeedItem { kind: FeedKind; name: string; at: number; n?: number; tier?: string }
+export type FeedKind = 'follow' | 'sub' | 'resub' | 'gift' | 'raid' | 'join' | 'redeem';
+/** Событие ленты. first — зритель впервые на канале; text — название награды. */
+export interface FeedItem { kind: FeedKind; name: string; at: number; n?: number; tier?: string; first?: boolean; text?: string }
+
+/** Итоги одного стрима (сохраняются в базе при окончании эфира). */
+export interface StreamSummary {
+  id: string;
+  startedAt: number;
+  endedAt: number;
+  title: string;
+  game: string;
+  peakViewers: number;
+  avgViewers: number | null;
+  followers: number;
+  followerNames: string[];
+  subs: number;
+  resubs: number;
+  subNames: string[];
+  gifts: number;
+  raids: Array<{ name: string; viewers: number }>;
+  /** Сколько разных людей было в чате; null — нет права на список чата. */
+  chatters: number | null;
+  newChatters: number;
+  newChatterNames: string[];
+  redemptions: number;
+}
+
+/** Хранилище статистики (база бота). Без него бот не помнит зрителей и итоги стримов. */
+export interface StatsStore {
+  /** Отметить зрителей чата. sessionId — засчитать им посещение этого стрима; null — только узнать, сколько раз были. */
+  chatterVisits(users: Array<{ login: string; name: string }>, sessionId: string | null, now: number): Map<string, number>;
+  /** С какого момента бот запоминает зрителей (null — ещё ни разу). */
+  trackingSince(): number | null;
+  saveSummary(s: StreamSummary): void;
+  summaries(limit: number): StreamSummary[];
+}
+
+export interface ChatterView { name: string; since: number; visits: number | null; first: boolean }
 
 export type Health = 'good' | 'warn' | 'bad';
 
@@ -59,13 +98,17 @@ export interface StatsView {
   viewers: number | null;
   peakViewers: number | null;
   chatters: number | null;
-  chattersList: Array<{ name: string; since: number }>;
+  chattersList: ChatterView[];
+  /** С какого момента бот запоминает зрителей («впервые» не показывается до первого полного стрима). */
+  chattersTrackedSince: number | null;
   followers: number | null;
   followersSession: number;
   subs: number | null;
   subPoints: number | null;
   subsSession: number;
   feed: FeedItem[];
+  /** Последние итоги стримов (новые первыми, до двух — для сравнения). */
+  summaries: StreamSummary[];
   obs: {
     enabled: boolean;
     state: ObsState;
@@ -83,10 +126,57 @@ export interface StatsView {
     cpu: number | null;
     health: Health | null;
     healthReason: string;
+    mics: ObsMic[];
   };
 }
 
-interface SessionState { streamId: string; peakViewers: number; followersSession: number; subsSession: number }
+/** Текущий стрим: счётчики «за стрим» и данные для итогов. Хранится в базе (meta stats_session) — переживает перезапуск. */
+interface SessionState {
+  /** Внутренний номер (пусто — эфира ещё не было). */
+  id: string;
+  /** Номер трансляции Twitch (пусто — ещё не известен). */
+  streamId: string;
+  startedAt: number;
+  /** Начало посчитано по длительности OBS (уточнится по Twitch). */
+  startEstimated: boolean;
+  /** 0 — эфир идёт. */
+  endedAt: number;
+  /** Последний раз, когда эфир точно шёл (для итогов, если бот был закрыт до конца стрима). */
+  lastAt: number;
+  peakViewers: number;
+  viewerSum: number;
+  viewerSamples: number;
+  followersSession: number;
+  subsSession: number;
+  resubs: number;
+  followerNames: string[];
+  subNames: string[];
+  gifts: number;
+  raids: Array<{ name: string; viewers: number }>;
+  chatters: string[];
+  newChatters: string[];
+  chattersKnown: boolean;
+  redemptions: number;
+  title: string;
+  game: string;
+}
+
+function emptySession(): SessionState {
+  return {
+    id: '', streamId: '', startedAt: 0, startEstimated: false, endedAt: 0, lastAt: 0, peakViewers: 0, viewerSum: 0, viewerSamples: 0,
+    followersSession: 0, subsSession: 0, resubs: 0, followerNames: [], subNames: [], gifts: 0, raids: [],
+    chatters: [], newChatters: [], chattersKnown: false, redemptions: 0, title: '', game: '',
+  };
+}
+
+/** Обрыв короче этого — тот же стрим (переподключение, перезапуск OBS). */
+const RESUME_MS = 10 * 60_000;
+/** Стримы короче минуты в историю не попадают (проверка, случайный запуск). */
+const MIN_SUMMARY_MS = 60_000;
+const NAMES_MAX = 200;
+/** Открытая запись о стриме без признаков жизни дольше этого — тот стрим давно закончился. */
+const STALE_MS = 6 * 3600_000;
+const CHATTERS_MAX = 20_000;
 
 export interface StatsOptions {
   log: ScopedLogger;
@@ -98,6 +188,9 @@ export interface StatsOptions {
   obsConfig: () => ObsWsConfig;
   loadSession?: () => string | null;
   saveSession?: (json: string) => void;
+  store?: StatsStore;
+  /** Обрыв короче этого — продолжение того же стрима (тесты ставят 0). */
+  resumeMs?: number;
   obsPollMs?: number;
   obsHost?: string;
   /** Интервалы опроса Twitch (тесты). */
@@ -132,8 +225,9 @@ export class StreamStats extends EventEmitter {
   private followers: number | null = null;
   private subs: number | null = null;
   private subPoints: number | null = null;
-  private chatters: Map<string, { name: string; since: number }> | null = null;
-  private session: SessionState = { streamId: '', peakViewers: 0, followersSession: 0, subsSession: 0 };
+  private chatters: Map<string, ChatterView> | null = null;
+  private session: SessionState = emptySession();
+  private summariesCache: StreamSummary[] | null = null;
   private feed: FeedItem[] = [];
   private noScope = new Set<string>();
 
@@ -150,22 +244,24 @@ export class StreamStats extends EventEmitter {
     this.iv = { ...DEFAULT_INTERVALS, ...opts.intervals };
     try {
       const saved = opts.loadSession?.();
-      if (saved) { const s = JSON.parse(saved) as SessionState; if (typeof s.streamId === 'string') this.session = { ...this.session, ...s }; }
+      if (saved) { const s = JSON.parse(saved) as SessionState; if (typeof s.streamId === 'string') this.session = { ...emptySession(), ...s }; }
     } catch { /* повреждённая запись — начинаем заново */ }
     this.obs = new ObsClient({ log: opts.log, getConfig: opts.obsConfig, pollMs: opts.obsPollMs, host: opts.obsHost });
     this.obs.on('state', () => this.changed());
     this.obs.on('video', () => this.changed());
+    this.obs.on('mics', () => this.changed());
     this.obs.on('sample', (s: ObsSample) => this.onSample(s));
     this.obs.on('stream', (on: boolean) => {
       if (on) {
-        // Эфир начался в OBS: счётчики сессии — с нуля; номер трансляции Twitch подхватим, когда он появится.
-        this.resetSession('');
+        // Эфир начался в OBS: новый стрим (или продолжение после короткого обрыва); номер трансляции Twitch подхватим позже.
+        this.beginSession('', Date.now());
         this.samples = []; this.bitrate = [];
         this.obsStartedAt = Date.now();
         this.obsTracks = 1;
         this.due.stream = Date.now() + 5000;
       } else {
         this.obsStartedAt = null;
+        this.endSession(Date.now());
       }
       this.changed();
     });
@@ -228,9 +324,95 @@ export class StreamStats extends EventEmitter {
     this.emitTimer.unref();
   }
 
-  private resetSession(streamId: string): void {
-    this.session = { streamId, peakViewers: this.viewers ?? 0, followersSession: 0, subsSession: 0 };
+  /** OBS подключён и сейчас не транслирует — ему верим больше, чем Twitch (у Twitch задержка до минуты). */
+  private obsSaysOffline(): boolean {
+    const s = this.samples[this.samples.length - 1];
+    return this.obs.state === 'ok' && !!s && !s.streaming;
+  }
+
+  private obsStreaming(): boolean {
+    const s = this.samples[this.samples.length - 1];
+    return this.obs.state === 'ok' && !!s?.streaming;
+  }
+
+  private sessionOpen(): boolean { return !!this.session.id && !this.session.endedAt; }
+
+  /** Эфир идёт: продолжить текущий стрим или начать новый. streamId — номер трансляции Twitch, если известен. */
+  private beginSession(streamId: string, startedAt: number): void {
+    const s = this.session;
+    const now = Date.now();
+    if (this.sessionOpen()) {
+      const otherStream = streamId && s.streamId && s.streamId !== streamId && now - s.lastAt > (this.o.resumeMs ?? RESUME_MS);
+      // Без номера Twitch: запись осталась от давнего стрима, конец которого бот не застал.
+      const stale = !streamId && s.lastAt && now - s.lastAt > STALE_MS;
+      if (otherStream || stale) {
+        // Бот не застал конец прошлого стрима — закрываем его по последнему известному моменту.
+        this.endSession(s.lastAt || now);
+        this.startNew(streamId, startedAt);
+      } else if (streamId && s.streamId !== streamId) { s.streamId = streamId; this.saveSession(); }
+      return;
+    }
+    if (s.id && s.endedAt && now - s.endedAt < (this.o.resumeMs ?? RESUME_MS)) {
+      s.endedAt = 0; // короткий обрыв — тот же стрим, итоги допишутся
+      if (streamId) s.streamId = streamId;
+      s.lastAt = now;
+      this.saveSession();
+      return;
+    }
+    if (!s.id && streamId && s.streamId === streamId) {
+      // Запись старой версии бота (1.5) про этот же стрим — счётчики сохраняем.
+      Object.assign(s, { ...emptySession(), ...s, id: newId(), startedAt, lastAt: now });
+      this.saveSession();
+      return;
+    }
+    this.startNew(streamId, startedAt);
+  }
+
+  private startNew(streamId: string, startedAt: number): void {
+    this.session = { ...emptySession(), id: newId(), streamId, startedAt, lastAt: Date.now(), peakViewers: this.viewers ?? 0, title: this.title, game: this.game };
     this.saveSession();
+  }
+
+  /** Эфир закончился: сохранить итоги. */
+  private endSession(at: number): void {
+    const s = this.session;
+    if (!this.sessionOpen()) return;
+    s.endedAt = Math.max(at, s.startedAt);
+    this.saveSession();
+    if (s.endedAt - s.startedAt < MIN_SUMMARY_MS || !this.o.store) return;
+    try { this.o.store.saveSummary(this.summaryOf(s)); this.summariesCache = null; } catch (e) { this.o.log.warn('Итоги стрима не сохранены', e); }
+    this.changed();
+  }
+
+  private summaryOf(s: SessionState): StreamSummary {
+    return {
+      id: s.id, startedAt: s.startedAt, endedAt: s.endedAt, title: s.title, game: s.game,
+      peakViewers: s.peakViewers, avgViewers: s.viewerSamples ? Math.round(s.viewerSum / s.viewerSamples) : null,
+      followers: s.followersSession, followerNames: s.followerNames.slice(0, NAMES_MAX),
+      subs: s.subsSession, resubs: s.resubs, subNames: s.subNames.slice(0, NAMES_MAX), gifts: s.gifts, raids: s.raids.slice(0, 50),
+      chatters: s.chattersKnown ? s.chatters.length : null, newChatters: s.newChatters.length, newChatterNames: s.newChatters.slice(0, NAMES_MAX),
+      redemptions: s.redemptions,
+    };
+  }
+
+  private pushName(list: string[], name: string): void {
+    if (name && list.length < NAMES_MAX && !list.includes(name)) list.push(name);
+  }
+
+  /** Награда за баллы канала (любая, не только бота) — в ленту и в итоги стрима. */
+  noteRedemption(userName: string, rewardTitle: string): void {
+    this.session.redemptions++;
+    this.addFeed({ kind: 'redeem', name: userName, at: Date.now(), text: rewardTitle });
+    this.saveSession();
+    this.changed();
+  }
+
+  /** История стримов изменилась (удалили запись в панели). */
+  historyChanged(): void { this.summariesCache = null; this.changed(); }
+
+  /** Итоги последних стримов (новые первыми). */
+  history(limit = 30): StreamSummary[] {
+    try { return this.o.store?.summaries(limit) ?? []; } catch { return []; }
   }
 
   private saveSession(): void {
@@ -292,13 +474,26 @@ export class StreamStats extends EventEmitter {
         this.startedAt = Date.parse(s.started_at) || null;
         this.title = s.title || '';
         this.game = s.game_name || '';
-        if (this.session.streamId === '') { this.session.streamId = s.id; this.saveSession(); }
-        else if (this.session.streamId !== s.id) this.resetSession(s.id);
-        if (this.viewers > this.session.peakViewers) { this.session.peakViewers = this.viewers; this.saveSession(); }
+        // Twitch ещё показывает эфир, а OBS уже остановил трансляцию — это задержка Twitch, не новый стрим.
+        if (!this.obsSaysOffline() || this.sessionOpen()) this.beginSession(s.id, this.startedAt ?? Date.now());
+        const ss = this.session;
+        if (this.sessionOpen()) {
+          // Время начала по Twitch точнее оценки по OBS; раньше нашего — тоже берём (бот открыли не сразу).
+          if (this.startedAt && (ss.startEstimated || (this.startedAt < ss.startedAt && ss.startedAt - this.startedAt < 15 * 60_000))) {
+            ss.startedAt = this.startedAt; ss.startEstimated = false;
+          }
+          ss.viewerSum += this.viewers; ss.viewerSamples++;
+          if (this.viewers > ss.peakViewers) ss.peakViewers = this.viewers;
+          ss.title = this.title; ss.game = this.game; ss.lastAt = Date.now();
+          this.saveSession();
+        }
       } else {
+        const wasLive = this.live === true;
         this.live = false;
         this.viewers = null;
         this.startedAt = null;
+        // Twitch: эфира нет. Если OBS не транслирует (или OBS не подключён) — стрим закончился.
+        if (this.sessionOpen() && !this.obsStreaming()) this.endSession(wasLive ? Date.now() : this.session.lastAt || Date.now());
       }
     } catch (e) { this.o.log.debug(`Статистика: ${(e as Error).message}`); }
   }
@@ -306,17 +501,39 @@ export class StreamStats extends EventEmitter {
   private async pollChatters(helix: HelixClient, user: { id: string; login: string }): Promise<void> {
     const r = await helix.getChatters(user.id, user.id);
     const first = this.chatters === null;
-    const prev = this.chatters ?? new Map();
-    const next = new Map<string, { name: string; since: number }>();
+    const prev = this.chatters ?? new Map<string, ChatterView>();
+    const next = new Map<string, ChatterView>();
     const now = Date.now();
-    for (const u of r.users) {
+    const users = r.users.filter((u) => { const l = u.login.toLowerCase(); return l !== user.login.toLowerCase() && !KNOWN_BOTS.has(l); });
+    // Сколько раз каждый был на стримах (база). «Впервые» — только если бот запоминал зрителей с начала этого стрима.
+    const ss = this.session;
+    const live = this.sessionOpen();
+    let visits = new Map<string, number>();
+    let canSayFirst = false;
+    if (this.o.store) {
+      try {
+        const since = this.o.store.trackingSince();
+        canSayFirst = live && since !== null && since <= ss.startedAt;
+        visits = this.o.store.chatterVisits(users, live ? ss.id : null, now);
+      } catch (e) { this.o.log.debug(`Статистика: зрители: ${(e as Error).message}`); }
+    }
+    if (live) { ss.chattersKnown = true; ss.lastAt = now; }
+    const known = live ? new Set(ss.chatters) : null;
+    for (const u of users) {
       const login = u.login.toLowerCase();
-      if (login === user.login.toLowerCase() || KNOWN_BOTS.has(login)) continue;
       const was = prev.get(login);
-      next.set(login, { name: u.name, since: was ? was.since : first ? 0 : now });
-      if (!was && !first) this.addFeed({ kind: 'join', name: u.name, at: now });
+      const v = visits.get(login) ?? null;
+      const isFirst = canSayFirst && v === 1;
+      next.set(login, { name: u.name, since: was ? was.since : first ? 0 : now, visits: v, first: isFirst });
+      if (!was && !first) this.addFeed({ kind: 'join', name: u.name, at: now, first: isFirst || undefined, n: v ?? undefined });
+      if (known && !known.has(login) && ss.chatters.length < CHATTERS_MAX) {
+        ss.chatters.push(login);
+        known.add(login);
+        if (isFirst) this.pushName(ss.newChatters, u.name);
+      }
     }
     this.chatters = next;
+    if (live) this.saveSession();
   }
 
   // ---------------- Twitch: события ----------------
@@ -338,28 +555,33 @@ export class StreamStats extends EventEmitter {
       case 'channel.follow':
         if (this.followers !== null) this.followers++;
         this.session.followersSession++;
+        this.pushName(this.session.followerNames, name);
         this.addFeed({ kind: 'follow', name, at: now });
         break;
       case 'channel.subscribe':
         this.session.subsSession++;
         this.due.subs = Math.min(this.due.subs, now + 10_000); // уточнить число и баллы
-        if (!ev.is_gift) this.addFeed({ kind: 'sub', name, at: now, tier: tierName(ev.tier) });
+        if (!ev.is_gift) { this.addFeed({ kind: 'sub', name, at: now, tier: tierName(ev.tier) }); this.pushName(this.session.subNames, name); }
         break;
       case 'channel.subscription.message':
+        this.session.resubs++;
+        this.pushName(this.session.subNames, name);
         this.addFeed({ kind: 'resub', name, at: now, n: Number(ev.cumulative_months) || undefined, tier: tierName(ev.tier) });
         break;
       case 'channel.subscription.gift':
+        this.session.gifts += Number(ev.total) || 1;
         this.addFeed({ kind: 'gift', name: ev.is_anonymous ? '' : name, at: now, n: Number(ev.total) || 1, tier: tierName(ev.tier) });
         break;
-      case 'channel.raid':
-        this.addFeed({ kind: 'raid', name: String(ev.from_broadcaster_user_name ?? ''), at: now, n: Number(ev.viewers) || 0 });
+      case 'channel.raid': {
+        const from = String(ev.from_broadcaster_user_name ?? '');
+        if (this.session.raids.length < 50) this.session.raids.push({ name: from, viewers: Number(ev.viewers) || 0 });
+        this.addFeed({ kind: 'raid', name: from, at: now, n: Number(ev.viewers) || 0 });
         break;
+      }
       case 'stream.online': {
         this.live = true;
         this.startedAt = Date.parse(String(ev.started_at ?? '')) || now;
-        const sid = String(ev.id ?? '');
-        if (sid && this.session.streamId !== sid && this.session.streamId !== '') this.resetSession(sid);
-        else if (sid) { this.session.streamId = sid; }
+        this.beginSession(String(ev.id ?? ''), this.startedAt);
         this.due.stream = now + 5000;
         break;
       }
@@ -367,6 +589,7 @@ export class StreamStats extends EventEmitter {
         this.live = false;
         this.viewers = null;
         this.startedAt = null;
+        if (!this.obsStreaming()) this.endSession(now);
         break;
     }
     this.saveSession();
@@ -390,6 +613,17 @@ export class StreamStats extends EventEmitter {
       if (this.bitrate.length > HISTORY) this.bitrate.shift();
     }
     if (!s.streaming) this.obsStartedAt = null;
+    if (s.streaming) {
+      // Бот запущен посреди эфира или пропустил событие начала — стрим всё равно учитываем.
+      const est = s.at - Math.round(s.durationMs / this.obsTracks);
+      if (!this.sessionOpen()) {
+        this.beginSession('', this.live && this.startedAt ? this.startedAt : est);
+        if (this.sessionOpen() && !(this.live && this.startedAt) && !this.obsStartedAt) this.session.startEstimated = true;
+      }
+      // Оценка по OBS уточняется, пока не известно число дорожек и время Twitch.
+      if (this.session.startEstimated && !this.startedAt) this.session.startedAt = est;
+      this.session.lastAt = s.at;
+    } else if (prev?.streaming && this.sessionOpen()) this.endSession(s.at);
     this.samples.push(s);
     if (this.samples.length > WINDOW + 1) this.samples.shift();
     this.measureTracks();
@@ -458,6 +692,9 @@ export class StreamStats extends EventEmitter {
     const now = Date.now();
     const { start: sessionStart, source: sessionSource } = this.sessionStartFrom(s, obsStreaming);
     const list = this.chatters ? [...this.chatters.values()].sort((a, b) => b.since - a.since || a.name.localeCompare(b.name)).slice(0, 300) : [];
+    if (!this.summariesCache) this.summariesCache = this.history(2);
+    let tracked: number | null = null;
+    try { tracked = this.o.store?.trackingSince() ?? null; } catch { /* */ }
     return {
       at: now,
       twitch: this.o.user() ? 'ok' : 'logged_out',
@@ -471,12 +708,14 @@ export class StreamStats extends EventEmitter {
       peakViewers: this.live ? Math.max(this.session.peakViewers, this.viewers ?? 0) : (this.session.peakViewers || null),
       chatters: this.chatters ? this.chatters.size : null,
       chattersList: list,
+      chattersTrackedSince: tracked,
       followers: this.followers,
       followersSession: this.session.followersSession,
       subs: this.subs,
       subPoints: this.subPoints,
       subsSession: this.session.subsSession,
       feed: this.feed.slice(0, 20),
+      summaries: this.summariesCache,
       obs: {
         enabled: this.o.useObs(),
         state: this.obs.state,
@@ -494,10 +733,13 @@ export class StreamStats extends EventEmitter {
         cpu: s ? Math.round(s.cpu * 10) / 10 : null,
         health: h.health,
         healthReason: h.reason,
+        mics: this.obs.mics,
       },
     };
   }
 }
+
+function newId(): string { return crypto.randomBytes(8).toString('hex'); }
 
 function tierName(t: unknown): string | undefined {
   return t === '2000' ? '2' : t === '3000' ? '3' : t === '1000' ? '1' : undefined;

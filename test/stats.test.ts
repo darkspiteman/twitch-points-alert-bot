@@ -10,7 +10,8 @@ import { makePaths, validateSettingsPatch } from '../src/config.ts';
 import { MemoryStore } from '../src/secure-store.ts';
 import { createServer } from '../src/server/http.ts';
 import { obsAuthString, readObsWsConfig, ObsClient } from '../src/obs-ws.ts';
-import { StreamStats, STATS_SCOPES } from '../src/stats.ts';
+import { StreamStats, STATS_SCOPES, type StreamSummary } from '../src/stats.ts';
+import { Db } from '../src/db.ts';
 import { HelixClient } from '../src/twitch/helix.ts';
 import { loaderHtml, STATS_DOCK_FILE, STATS_OVERLAY_FILE } from '../src/overlay-loader.ts';
 import type { EventSubMessage } from '../src/twitch/eventsub.ts';
@@ -37,6 +38,7 @@ class MockObs {
   t0 = Date.now();
   durationMs = 65_000;
   identified = 0;
+  inputs: Array<{ name: string; kind: string; muted: boolean; volume: number; active: boolean }> = [];
   requests: string[] = [];
   sockets: WebSocket[] = [];
   constructor(password: string | null) {
@@ -61,6 +63,12 @@ class MockObs {
             if (this.streaming) { this.bytes += 750_000; this.total = this.framesPerSec ? Math.round(((Date.now() - this.t0) * this.framesPerSec) / 1000) : this.total + 12; } // ≈ 6000 кбит/с при опросе раз в секунду
             data = { outputActive: this.streaming, outputReconnecting: false, outputDuration: this.durationMs, outputBytes: this.bytes, outputSkippedFrames: this.skipped, outputTotalFrames: this.total, outputCongestion: 0 };
           }
+          const inp = this.inputs.find((i) => i.name === (m.d.requestData as { inputName?: string; sourceName?: string } | undefined)?.inputName
+            || i.name === (m.d.requestData as { sourceName?: string } | undefined)?.sourceName);
+          if (type === 'GetInputList') data = { inputs: this.inputs.map((i) => ({ inputName: i.name, inputKind: i.kind, unversionedInputKind: i.kind })) };
+          if (type === 'GetInputMute' && inp) data = { inputMuted: inp.muted };
+          if (type === 'GetInputVolume' && inp) data = { inputVolumeMul: inp.volume, inputVolumeDb: 0 };
+          if (type === 'GetSourceActive' && inp) data = { videoActive: inp.active, videoShowing: inp.active };
           if (type === 'GetStats') data = { cpuUsage: 12.5, memoryUsage: 300, activeFps: 60, renderSkippedFrames: 0, renderTotalFrames: this.total };
           ws.send(JSON.stringify({ op: 7, d: { requestType: type, requestId: m.d.requestId, requestStatus: { result: true, code: 100 }, responseData: data } }));
         }
@@ -96,7 +104,7 @@ test('OBS: вход по паролю, битрейт, разрешение, п�
   cleanup.push(() => obs.close());
   const stats = new StreamStats({
     log, helix: () => null, user: () => null, hasScope: () => false, useObs: () => true,
-    obsConfig: () => ({ port: obs.port, password: 'secret-pass', enabled: true, fromFile: true }), obsPollMs: 100, idleStopMs: 50,
+    obsConfig: () => ({ port: obs.port, password: 'secret-pass', enabled: true, fromFile: true }), obsPollMs: 100, idleStopMs: 50, resumeMs: 0,
   });
   cleanup.push(() => stats.stop());
   stats.setClients(1);
@@ -148,6 +156,151 @@ test('OBS: «Расширенная трансляция» (несколько �
   // Эфир начался при открытом доке — время считается от этого момента.
   obs.event('StreamStateChanged', { outputActive: true, outputState: 'OBS_WEBSOCKET_OUTPUT_STARTED' });
   await waitFor(() => Math.abs(Date.now() - stats.view().sessionStart!) < 3000, 3000);
+});
+
+test('OBS: микрофон выключен / громкость / не в эфире / тишина — по данным OBS; системный звук не считается микрофоном', async () => {
+  const obs = await MockObs.start(null);
+  cleanup.push(() => obs.close());
+  obs.inputs = [
+    { name: 'Mic/Aux', kind: 'wasapi_input_capture', muted: true, volume: 1, active: true },
+    { name: 'Desktop Audio', kind: 'wasapi_output_capture', muted: true, volume: 1, active: true },
+    { name: 'Old mic', kind: 'wasapi_input_capture', muted: false, volume: 0, active: false },
+  ];
+  const stats = new StreamStats({
+    log, helix: () => null, user: () => null, hasScope: () => false, useObs: () => true,
+    obsConfig: () => ({ port: obs.port, password: '', enabled: true, fromFile: true }), obsPollMs: 100, idleStopMs: 50,
+  });
+  cleanup.push(() => stats.stop());
+  stats.setClients(1);
+  await waitFor(() => stats.view().obs.mics.length === 2, 5000);
+  const mics = () => Object.fromEntries(stats.view().obs.mics.map((m) => [m.name, m]));
+  assert.deepEqual(Object.keys(mics()).sort(), ['Mic/Aux', 'Old mic'], 'системный звук — не микрофон');
+  assert.equal(mics()['Mic/Aux'].muted, true);
+  assert.equal(mics()['Mic/Aux'].active, true);
+  assert.equal(mics()['Old mic'].active, false, 'источник не в текущей сцене');
+  assert.equal(mics()['Old mic'].volume, 0);
+  assert.equal(mics()['Mic/Aux'].silentMs, null, 'индикатор громкости ещё не приходил');
+  // Включили микрофон кнопкой в OBS — событие приходит сразу.
+  obs.inputs[0].muted = false;
+  obs.event('InputMuteStateChanged', { inputName: 'Mic/Aux', inputMuted: false });
+  await waitFor(() => mics()['Mic/Aux'].muted === false, 2000);
+  // Индикатор громкости: тишина копится, звук сбрасывает.
+  const meters = (level: number) => obs.event('InputVolumeMeters', { inputs: [{ inputName: 'Mic/Aux', inputLevelsMul: [[level, level, level], [level, level, level]] }] });
+  meters(0);
+  await new Promise((r) => setTimeout(r, 350));
+  meters(0.0001); // −80 дБ — всё ещё тишина
+  assert.ok((mics()['Mic/Aux'].silentMs ?? 0) >= 300, `тишина ${mics()['Mic/Aux'].silentMs}`);
+  meters(0.2);
+  await waitFor(() => (mics()['Mic/Aux'].silentMs ?? 999) < 100, 2000); // голос — тишина сброшена
+});
+
+test('зрители «впервые» / «×N» и итоги стрима: сохраняются в базе, второй стрим сравнивается с первым', async () => {
+  const t = standardTwitch();
+  let phase: 'live1' | 'off' | 'live2' = 'live1';
+  let live2Start = 0;
+  t.on('GET', '/streams', () => {
+    if (phase === 'off') return json(200, { data: [] });
+    const id = phase === 'live1' ? 'stream-1' : 'stream-2';
+    const started = phase === 'live1' ? Date.now() - 600_000 : live2Start;
+    return json(200, { data: [{ id, user_id: '1001', type: 'live', title: 'Тест', game_name: 'Just Chatting', viewer_count: phase === 'live1' ? 7 : 9, started_at: new Date(started).toISOString() }] });
+  });
+  t.on('GET', '/channels/followers', () => json(200, { total: 32, data: [] }));
+  t.on('GET', '/subscriptions', () => json(200, { total: 3, points: 4, data: [] }));
+  let chat = ['streamer', 'alice'];
+  t.on('GET', '/chat/chatters', () => json(200, { data: chat.map((l) => ({ user_id: l, user_login: l, user_name: l.toUpperCase() })), total: chat.length, pagination: {} }));
+  const auth = { getAccessToken: async () => 'tok', getClientId: () => CLIENT, refresh: async () => ({}) } as unknown as ConstructorParameters<typeof HelixClient>[0];
+  const helix = new HelixClient(auth, log, { fetchFn: t.fetch as typeof fetch, base: 'https://api.test/helix' });
+  const db = new Db(path.join(tmpDir(), 'bot.sqlite'));
+  cleanup.push(() => db.close());
+  const stats = new StreamStats({
+    log, helix: () => helix, user: () => ({ id: '1001', login: 'streamer' }), hasScope: () => true, useObs: () => false,
+    obsConfig: () => ({ port: 1, password: '', enabled: null, fromFile: false }), resumeMs: 0,
+    loadSession: () => db.getMeta('stats_session'), saveSession: (j) => db.setMeta('stats_session', j),
+    store: {
+      chatterVisits: (u, sid, now) => db.chatterVisits(u, sid, now), trackingSince: () => db.chattersTrackingSince(),
+      saveSummary: (s) => db.saveStreamSummary(s), summaries: (n) => db.streamSummaries(n),
+    },
+    intervals: { tick: 30, stream: 60, chatters: 60, followers: 10_000, subs: 10_000 },
+  });
+  cleanup.push(() => stats.stop());
+  stats.setClients(1);
+  // Стрим 1: бот только начал запоминать зрителей — «впервые» не показываем (вдруг alice смотрит давно).
+  await waitFor(() => stats.view().chatters === 1, 5000);
+  chat = ['streamer', 'alice', 'bob'];
+  await waitFor(() => stats.view().chatters === 2, 5000);
+  const v1 = stats.view();
+  assert.ok(v1.chattersList.every((c) => !c.first), 'в первом стриме «впервые» нет');
+  assert.equal(v1.chattersList.find((c) => c.name === 'ALICE')!.visits, 1);
+  assert.notEqual(v1.chattersTrackedSince, null);
+  stats.handleNotification(notif('channel.follow', { user_name: 'Carol' }));
+  stats.handleNotification(notif('channel.raid', { from_broadcaster_user_name: 'Raider', viewers: 40 }));
+  stats.noteRedemption('BOB', 'Сюрприз');
+  assert.deepEqual([stats.view().feed[0].kind, stats.view().feed[0].name, stats.view().feed[0].text], ['redeem', 'BOB', 'Сюрприз']);
+
+  // Конец стрима 1 → итоги в базе.
+  phase = 'off';
+  await waitFor(() => stats.view().summaries.length === 1, 5000);
+  const s1 = stats.view().summaries[0];
+  assert.equal(s1.peakViewers, 7);
+  assert.equal(s1.avgViewers, 7);
+  assert.equal(s1.followers, 1);
+  assert.deepEqual(s1.followerNames, ['Carol']);
+  assert.deepEqual(s1.raids, [{ name: 'Raider', viewers: 40 }]);
+  assert.equal(s1.chatters, 2);
+  assert.equal(s1.newChatters, 0);
+  assert.equal(s1.redemptions, 1);
+  assert.ok(s1.endedAt - s1.startedAt >= 590_000, 'начало стрима — по Twitch');
+
+  // Стрим 2: alice — второй раз, carol — впервые.
+  live2Start = Date.now();
+  chat = ['streamer', 'alice', 'carol'];
+  phase = 'live2';
+  await waitFor(() => stats.view().chattersList.some((c) => c.name === 'CAROL' && c.first), 5000);
+  const v2 = stats.view();
+  assert.equal(v2.chattersList.find((c) => c.name === 'ALICE')!.visits, 2);
+  assert.equal(v2.chattersList.find((c) => c.name === 'ALICE')!.first, false);
+  assert.ok(v2.feed.some((f) => f.kind === 'join' && f.name === 'CAROL' && f.first), 'в ленте: впервые на канале');
+  assert.equal(v2.followersSession, 0, 'новый стрим — счётчики с нуля');
+  assert.equal(v2.summaries.length, 1, 'итоги — только у закончившихся стримов');
+  // Повторный опрос того же стрима не увеличивает число посещений.
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(stats.view().chattersList.find((c) => c.name === 'ALICE')!.visits, 2);
+  // Стрим 2 закончился через 1 мин 5 с (по часам Twitch) — в истории два стрима, новый первым.
+  live2Start = Date.now() - 65_000;
+  await new Promise((r) => setTimeout(r, 150));
+  phase = 'off';
+  await waitFor(() => stats.view().summaries.length === 2, 5000);
+  const [last, prev] = stats.view().summaries;
+  assert.equal(prev.id, s1.id);
+  assert.equal(last.newChatters, 1);
+  assert.deepEqual(last.newChatterNames, ['CAROL']);
+  assert.equal(stats.history(10).length, 2);
+});
+
+test('OBS: перерыв в эфире короче 10 минут — тот же стрим (итоги не делятся)', async () => {
+  const obs = await MockObs.start(null);
+  cleanup.push(() => obs.close());
+  const saved: StreamSummary[] = [];
+  const stats = new StreamStats({
+    log, helix: () => null, user: () => null, hasScope: () => false, useObs: () => true,
+    obsConfig: () => ({ port: obs.port, password: '', enabled: true, fromFile: true }), obsPollMs: 100, idleStopMs: 50,
+    store: { chatterVisits: () => new Map(), trackingSince: () => null, saveSummary: (s) => { const i = saved.findIndex((x) => x.id === s.id); if (i >= 0) saved[i] = s; else saved.push(s); }, summaries: () => saved.slice().reverse() },
+  });
+  cleanup.push(() => stats.stop());
+  stats.setClients(1);
+  await waitFor(() => stats.view().obs.streaming, 5000);
+  stats.handleNotification(notif('channel.follow', { user_name: 'A' }));
+  obs.streaming = false;
+  await waitFor(() => saved.length === 1, 5000);
+  assert.equal(saved[0].followers, 1);
+  obs.streaming = true;
+  obs.event('StreamStateChanged', { outputActive: true, outputState: 'OBS_WEBSOCKET_OUTPUT_STARTED' });
+  await waitFor(() => stats.view().obs.streaming, 5000);
+  stats.handleNotification(notif('channel.follow', { user_name: 'B' }));
+  assert.equal(stats.view().followersSession, 2, 'перезапуск трансляции — тот же стрим');
+  obs.streaming = false;
+  await waitFor(() => saved.length === 1 && saved[0].followers === 2, 5000);
+  assert.deepEqual(saved[0].followerNames, ['A', 'B']);
 });
 
 test('OBS: неверный пароль → auth_failed, без пароля в Hello — подключение без него', async () => {
@@ -323,6 +476,15 @@ test('бот: док получает статистику по /ws/stats, overl
   assert.match(st.setup.dockUrl, /\/stats\/dock$/);
   const state = await (await api(port, 'GET', '/api/state')).json() as { settings: { obsWsPassword: string } };
   assert.equal(state.settings.obsWsPassword, '••••anel');
+
+  // Очередь оповещений приходит в док; кнопки дока работают (запрос со страницы бота).
+  app.queue.setPaused(true);
+  await waitFor(() => msgs.some((m) => (m as unknown as { queue?: { paused: boolean } }).queue?.paused === true), 3000);
+  const resume = await fetch(`http://127.0.0.1:${port}/api/queue/resume`, { method: 'POST', headers: { 'x-tab-request': '1', Origin: `http://127.0.0.1:${port}`, 'Sec-Fetch-Site': 'same-origin' } });
+  assert.equal(resume.status, 200);
+  await waitFor(() => (msgs[msgs.length - 1] as unknown as { queue: { paused: boolean } }).queue.paused === false, 3000);
+  const hist = await (await api(port, 'GET', '/api/stats/history')).json() as { summaries: unknown[] };
+  assert.deepEqual(hist.summaries, []);
 
   // Чужой сайт не подключится к /ws/stats.
   const evil = new WebSocket(`ws://127.0.0.1:${port}/ws/stats`, { headers: { Origin: 'https://evil.example' } });

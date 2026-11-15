@@ -64,6 +64,12 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
   }));
 
   // Статистика стрима: снимок и всё для настройки дока и overlay.
+  add('GET', '/api/stats/history', () => ({ summaries: app.stats.history(60) }));
+  add('POST', '/api/stats/history/:id/delete', (_q, _r, p) => {
+    const deleted = app.db.deleteStreamSummary(p.id);
+    app.stats.historyChanged();
+    return { deleted };
+  });
   add('GET', '/api/stats', () => {
     const cfg = app.obsWsConfig();
     const s = app.db.getSettings();

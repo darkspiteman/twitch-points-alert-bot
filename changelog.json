@@ -1,5 +1,23 @@
 [
   {
+    "version": "1.6.0",
+    "date": "2026-11-16",
+    "changes": [
+      "Тревога «Микрофон выключен»: если во время эфира все микрофоны в OBS выключены или их громкость на нуле, в доке загорается красная полоса; если микрофона не слышно 2 минуты — жёлтое предупреждение. Значок ⚙ — за какими микрофонами следить.",
+      "«Впервые на канале» и «×N» у зрителей в чате: бот запоминает, кто сколько стримов заходил, и подсвечивает новичков — сразу видно, кого поприветствовать.",
+      "Очередь оповещений прямо в доке: что играет и кто ждёт, кнопки «Пропустить», «Пауза» и «Убрать». Награды за баллы видны в ленте событий.",
+      "Итоги стрима: после эфира в доке — зрители в среднем и пик, новые фолловеры и подписки поимённо, рейды, сколько людей было в чате и сколько впервые, с сравнением с прошлым стримом. Вся история — в «Статистике».",
+      "Док работает и в Streamlabs Desktop: «Editor» → «Layout Editor» → элемент «Website»."
+    ],
+    "changes_en": [
+      "“Mic muted” alarm: if all your OBS mics are muted or at zero volume while live, the dock shows a red bar; if the mic has been silent for 2 minutes — a yellow warning. Use ⚙ to choose which mics to watch.",
+      "“First time on the channel” and “×N” next to chatters: the bot remembers how many streams each person visited and highlights newcomers — you instantly see whom to greet.",
+      "The alert queue right in the dock: what’s playing and who’s waiting, with “Skip”, “Pause” and “Remove” buttons. Channel point rewards appear in the event feed.",
+      "Stream summary: after the stream the dock shows average and peak viewers, new followers and subs by name, raids, how many people were in chat and how many for the first time, compared with the previous stream. Full history is in “Stats”.",
+      "The dock also works in Streamlabs Desktop: “Editor” → “Layout Editor” → the “Website” element."
+    ]
+  },
+  {
     "version": "1.5.0",
     "date": "2026-11-15",
     "changes": [

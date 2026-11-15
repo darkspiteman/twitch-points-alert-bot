@@ -14,16 +14,23 @@
   <button id="gear" class="gear" type="button" aria-label="Settings">⚙</button>
 </header>
 <div id="tiles-menu" class="menu" hidden></div>
+<div id="mic" class="mic" hidden></div>
 <div id="notes"></div>
 <main id="tiles" class="tiles"></main>
+<section id="summary" class="summary" hidden></section>
+<section id="queue" class="list queue" hidden>
+  <div id="queue-head" class="queue-head"></div>
+  <ul id="queue-list"></ul>
+</section>
 <section class="lists">
-  <div class="list">
+  <div id="feed-box" class="list">
     <h2 id="feed-title"></h2>
     <ul id="feed"></ul>
   </div>
-  <div class="list">
+  <div id="chat-box" class="list">
     <h2 id="chat-title"></h2>
     <ul id="chat" class="chat"></ul>
+    <div id="chat-note" class="chat-note" hidden></div>
   </div>
 </section>
 <div id="conn" class="conn" hidden></div>

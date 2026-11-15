@@ -88,6 +88,11 @@ const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS seen_messages (message_id TEXT PRIMARY KEY, ts INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, level TEXT NOT NULL, type TEXT NOT NULL, message TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)`,
+  // 1.6.0: зрители чата (сколько стримов были) и итоги стримов.
+  `CREATE TABLE IF NOT EXISTS chatter_history (login TEXT PRIMARY KEY, name TEXT NOT NULL, first_seen INTEGER NOT NULL,
+     last_seen INTEGER NOT NULL, visits INTEGER NOT NULL DEFAULT 0, last_session TEXT NOT NULL DEFAULT '')`,
+  `CREATE TABLE IF NOT EXISTS stream_history (id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, data TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_stream_history_started ON stream_history(started_at)`,
 ];
 
 export class Db {
@@ -170,6 +175,53 @@ export class Db {
   }
   setMeta(key: string, value: string): void {
     this.raw.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  }
+
+  // ---------- статистика: зрители и итоги стримов ----------
+  /** Отметить зрителей чата; sessionId — засчитать посещение этого стрима (один раз за стрим). Возвращает login → число стримов. */
+  chatterVisits(users: Array<{ login: string; name: string }>, sessionId: string | null, now: number): Map<string, number> {
+    const out = new Map<string, number>();
+    if (!users.length) return out;
+    if (sessionId && this.getMeta('chatters_since') === null) this.setMeta('chatters_since', String(now));
+    const get = this.raw.prepare('SELECT visits, last_session FROM chatter_history WHERE login = ?');
+    const ins = this.raw.prepare('INSERT INTO chatter_history(login, name, first_seen, last_seen, visits, last_session) VALUES (?, ?, ?, ?, 1, ?)');
+    const upd = this.raw.prepare('UPDATE chatter_history SET name = ?, last_seen = ?, visits = visits + ?, last_session = ? WHERE login = ?');
+    this.raw.exec('BEGIN');
+    try {
+      for (const u of users) {
+        const login = u.login.toLowerCase();
+        const row = get.get(login) as { visits: number; last_session: string } | undefined;
+        if (!sessionId) { out.set(login, row ? row.visits : 0); continue; }
+        if (!row) { ins.run(login, u.name, now, now, sessionId); out.set(login, 1); continue; }
+        const add = row.last_session === sessionId ? 0 : 1;
+        upd.run(u.name, now, add, sessionId, login);
+        out.set(login, row.visits + add);
+      }
+      this.raw.exec('COMMIT');
+    } catch (e) { this.raw.exec('ROLLBACK'); throw e; }
+    return out;
+  }
+
+  chattersTrackingSince(): number | null {
+    const v = this.getMeta('chatters_since');
+    return v === null ? null : Number(v) || null;
+  }
+
+  saveStreamSummary(s: { id: string; startedAt: number; endedAt: number }): void {
+    this.raw.prepare(`INSERT INTO stream_history(id, started_at, ended_at, data) VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET started_at = excluded.started_at, ended_at = excluded.ended_at, data = excluded.data`)
+      .run(s.id, s.startedAt, s.endedAt, JSON.stringify(s));
+  }
+
+  streamSummaries<T>(limit: number): T[] {
+    const rows = this.raw.prepare('SELECT data FROM stream_history ORDER BY started_at DESC LIMIT ?').all(limit) as { data: string }[];
+    const out: T[] = [];
+    for (const r of rows) { try { out.push(JSON.parse(r.data) as T); } catch { /* испорченная запись */ } }
+    return out;
+  }
+
+  deleteStreamSummary(id: string): boolean {
+    return Number(this.raw.prepare('DELETE FROM stream_history WHERE id = ?').run(id).changes) > 0;
   }
 
   // ---------- награды ----------

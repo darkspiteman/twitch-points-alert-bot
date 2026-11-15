@@ -7,7 +7,8 @@ import type { ScopedLogger } from './logger.ts';
 
 /**
  * Клиент OBS WebSocket 5 (встроен в OBS Studio с версии 28: «Сервис» → «Настройки сервера WebSocket»).
- * Только чтение: состояние трансляции, байты вывода (→ битрейт), кадры, CPU, разрешение.
+ * Только чтение: состояние трансляции, байты вывода (→ битрейт), кадры, CPU, разрешение, микрофоны
+ * (выключен ли, громкость, есть ли звук — для тревоги «микрофон выключен»).
  * Никаких команд, меняющих сцены или настройки OBS, бот не отправляет.
  */
 
@@ -52,13 +53,33 @@ export interface ObsSample {
   renderTotalFrames: number;
 }
 
+/** Микрофон в OBS (источник захвата входного звука). */
+export interface ObsMic {
+  name: string;
+  /** Выключен кнопкой в микшере OBS. */
+  muted: boolean;
+  /** Громкость в микшере, 0..1+ (0 — ползунок в самом низу). */
+  volume: number;
+  /** Звучит в эфире: источник в текущей сцене (или общий микрофон из настроек звука OBS). */
+  active: boolean;
+  /** Сколько мс нет звука громче −60 дБ; null — уровень неизвестен (OBS не присылает индикатор). */
+  silentMs: number | null;
+}
+
+/** Виды источников «Захват входного аудиопотока» (микрофон) в OBS для Windows, macOS и Linux. */
+export const MIC_KINDS = new Set(['wasapi_input_capture', 'coreaudio_input_capture', 'pulse_input_capture', 'alsa_input_capture', 'pipewire_audio_input_capture']);
+/** Порог «тишины»: −60 дБ. */
+const SILENCE_MUL = 0.001;
+
 export interface ObsVideo { width: number; height: number; baseWidth: number; baseHeight: number; fps: number }
 
 interface Pending { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
 
 const OP = { Hello: 0, Identify: 1, Identified: 2, Event: 5, Request: 6, RequestResponse: 7 } as const;
-/** Подписка только на события выходов (StreamStateChanged). */
+/** Подписка: выходы (StreamStateChanged), источники (выключение звука), индикатор громкости (≈20 раз в секунду). */
 const EVENTS_OUTPUTS = 1 << 6;
+const EVENTS_INPUTS = 1 << 3;
+const EVENTS_VOLUME_METERS = 1 << 16;
 
 export interface ObsClientOptions {
   log: ScopedLogger;
@@ -70,7 +91,7 @@ export interface ObsClientOptions {
 
 /**
  * Подключение к OBS с переподключением. События: 'state' (ObsState, message), 'sample' (ObsSample), 'video' (ObsVideo),
- * 'stream' (boolean — трансляция началась/закончилась).
+ * 'stream' (boolean — трансляция началась/закончилась), 'mics' (ObsMic[] — сменилось состояние микрофонов).
  */
 export class ObsClient extends EventEmitter {
   private opts: ObsClientOptions;
@@ -85,6 +106,8 @@ export class ObsClient extends EventEmitter {
   private _message = '';
   video: ObsVideo | null = null;
   version = '';
+  /** Микрофоны: имя → состояние. Список обновляется раз в ~30 с, выключение — сразу по событию OBS. */
+  private micMap = new Map<string, { kind: string; muted: boolean; volume: number; active: boolean; lastSound: number; lastMeter: number }>();
 
   constructor(opts: ObsClientOptions) {
     super();
@@ -92,6 +115,16 @@ export class ObsClient extends EventEmitter {
   }
 
   get state(): ObsState { return this._state; }
+
+  /** Микрофоны OBS сейчас (пусто — нет связи или микрофонов нет). */
+  get mics(): ObsMic[] {
+    if (this._state !== 'ok') return [];
+    const now = Date.now();
+    return [...this.micMap.entries()].map(([name, m]) => ({
+      name, muted: m.muted, volume: m.volume, active: m.active,
+      silentMs: m.lastMeter && now - m.lastMeter < 10_000 ? now - m.lastSound : null,
+    }));
+  }
   get message(): string { return this._message; }
 
   private setState(s: ObsState, message = ''): void {
@@ -127,6 +160,7 @@ export class ObsClient extends EventEmitter {
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error('closed')); }
     this.pending.clear();
+    this.micMap.clear();
     const ws = this.ws;
     this.ws = null;
     if (ws) { ws.removeAllListeners(); ws.on('error', () => {}); try { ws.terminate(); } catch { /* */ } }
@@ -166,7 +200,7 @@ export class ObsClient extends EventEmitter {
       if (m.op === OP.Hello) {
         this.version = String(d.obsWebSocketVersion ?? '');
         const auth = d.authentication as { challenge?: string; salt?: string } | undefined;
-        const identify: Record<string, unknown> = { rpcVersion: 1, eventSubscriptions: EVENTS_OUTPUTS };
+        const identify: Record<string, unknown> = { rpcVersion: 1, eventSubscriptions: EVENTS_OUTPUTS | EVENTS_INPUTS | EVENTS_VOLUME_METERS };
         if (auth?.challenge && auth.salt) {
           if (!cfg.password) { this.setState('auth_failed', 'OBS требует пароль WebSocket, а он не найден'); this.retry(10_000); return; }
           identify.authentication = obsAuthString(cfg.password, auth.salt, auth.challenge);
@@ -196,6 +230,14 @@ export class ObsClient extends EventEmitter {
             this.emit('stream', Boolean(ed.outputActive));
             void this.poll();
           }
+        } else if (d.eventType === 'InputVolumeMeters') {
+          this.onMeters((d.eventData ?? {}) as { inputs?: Array<{ inputName?: string; inputLevelsMul?: number[][] }> });
+        } else if (d.eventType === 'InputMuteStateChanged') {
+          const ed = (d.eventData ?? {}) as { inputName?: string; inputMuted?: boolean };
+          const m = this.micMap.get(String(ed.inputName ?? ''));
+          if (m && m.muted !== Boolean(ed.inputMuted)) { m.muted = Boolean(ed.inputMuted); this.emit('mics', this.mics); }
+        } else if (d.eventType === 'InputCreated' || d.eventType === 'InputRemoved' || d.eventType === 'InputNameChanged') {
+          this.micListDue = true;
         }
       }
     });
@@ -228,6 +270,52 @@ export class ObsClient extends EventEmitter {
     });
   }
 
+  private micListDue = true;
+
+  /** Индикатор громкости: запоминаем, когда у микрофона последний раз был звук громче −60 дБ. */
+  private onMeters(ed: { inputs?: Array<{ inputName?: string; inputLevelsMul?: number[][] }> }): void {
+    const now = Date.now();
+    for (const inp of ed.inputs ?? []) {
+      const m = this.micMap.get(String(inp.inputName ?? ''));
+      if (!m) continue;
+      if (!m.lastMeter) m.lastSound = now;
+      m.lastMeter = now;
+      // [магнитуда, пик, пик на входе] по каналам; «пик на входе» — до ползунка громкости.
+      let peak = 0;
+      for (const ch of inp.inputLevelsMul ?? []) peak = Math.max(peak, Number(ch?.[2] ?? ch?.[1]) || 0);
+      if (peak > SILENCE_MUL) m.lastSound = now;
+    }
+  }
+
+  /** Список микрофонов, выключен ли каждый, громкость и звучит ли он в эфире. */
+  private async pollMics(): Promise<void> {
+    if (this.micListDue) {
+      this.micListDue = false;
+      const r = await this.request('GetInputList');
+      const names = new Map<string, string>();
+      for (const i of (r.inputs as Array<{ inputName?: string; inputKind?: string; unversionedInputKind?: string }>) ?? []) {
+        const kind = String(i.unversionedInputKind ?? i.inputKind ?? '');
+        if (MIC_KINDS.has(kind) && i.inputName) names.set(String(i.inputName), kind);
+      }
+      for (const n of [...this.micMap.keys()]) if (!names.has(n)) this.micMap.delete(n);
+      for (const [n, kind] of names) if (!this.micMap.has(n)) this.micMap.set(n, { kind, muted: false, volume: 1, active: true, lastSound: 0, lastMeter: 0 });
+    }
+    let changed = false;
+    for (const [name, m] of this.micMap) {
+      const [mute, vol, act] = await Promise.all([
+        this.request('GetInputMute', { inputName: name }),
+        this.request('GetInputVolume', { inputName: name }),
+        this.request('GetSourceActive', { sourceName: name }).catch(() => ({ videoActive: true })),
+      ]);
+      const muted = Boolean(mute.inputMuted);
+      const volume = Math.round((Number(vol.inputVolumeMul ?? 1) || 0) * 1000) / 1000;
+      const active = Boolean(act.videoActive);
+      if (muted !== m.muted || volume !== m.volume || active !== m.active) changed = true;
+      Object.assign(m, { muted, volume, active });
+    }
+    if (changed) this.emit('mics', this.mics);
+  }
+
   private async poll(): Promise<void> {
     if (this._state !== 'ok') return;
     try {
@@ -240,7 +328,9 @@ export class ObsClient extends EventEmitter {
           baseWidth: Number(v.baseWidth) || 0, baseHeight: Number(v.baseHeight) || 0, fps: Math.round((num / den) * 100) / 100,
         };
         this.emit('video', this.video);
+        this.micListDue = true;
       }
+      await this.pollMics().catch((e) => this.opts.log.debug(`OBS: микрофоны: ${(e as Error).message}`));
       const [st, stats] = await Promise.all([this.request('GetStreamStatus'), this.request('GetStats')]);
       const sample: ObsSample = {
         at: Date.now(),

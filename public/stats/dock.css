@@ -31,9 +31,11 @@ header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .gear:hover { color: var(--text); background: var(--tile); }
 
 .menu { background: var(--tile); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 4px 10px; }
-.menu[hidden], .health[hidden], .conn[hidden] { display: none; }
+.menu[hidden], .health[hidden], .conn[hidden], .mic[hidden], .summary[hidden], .queue[hidden], .list[hidden], .chat-note[hidden] { display: none; }
 .menu-title { grid-column: 1 / -1; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-.menu label { cursor: pointer; white-space: nowrap; }
+.menu label { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu-title:not(:first-child) { margin-top: 6px; }
+.menu-empty { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
 
 #notes:empty { display: none; }
 #notes { display: grid; gap: 4px; margin-bottom: 8px; }
@@ -79,3 +81,44 @@ li.f-join .ic { color: var(--good); }
 
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: #3a3a46; border-radius: 4px; }
+
+/* 1.6.0: тревога «микрофон», очередь оповещений, отметки зрителей, итоги прошлого стрима */
+.mic { display: grid; gap: 4px; margin-bottom: 8px; }
+.mic-alert { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; font-weight: 600; font-size: 13px; }
+.mic-alert .ic { width: 18px; height: 18px; }
+.mic-alert.warn { background: rgba(255, 181, 71, .16); color: var(--warn); border: 1px solid rgba(255, 181, 71, .4); }
+.mic-alert.bad { background: var(--bad); color: #fff; animation: alarm 1s ease-in-out infinite; }
+@keyframes alarm { 50% { background: #b3261e; } }
+
+.queue { margin-top: 10px; }
+.queue-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.queue-head h2 { margin: 0; }
+.q-paused { font-size: 11px; font-weight: 600; color: var(--warn); background: rgba(255, 181, 71, .15); padding: 1px 6px; border-radius: 4px; }
+.q-tools { margin-left: auto; display: flex; gap: 4px; }
+.qbtn { background: var(--tile-hi); color: var(--text); border: 0; border-radius: 5px; padding: 2px 8px; font-size: 13px; cursor: pointer; flex: none; }
+.qbtn:hover { background: #3a3a46; }
+.qbtn.small { padding: 0 6px; font-size: 11px; color: var(--muted); background: none; }
+.qbtn.small:hover { color: var(--bad); background: var(--tile-hi); }
+#queue-list li.q-current { background: rgba(169, 112, 255, .14); }
+#queue-list li.q-current b::before { content: '▶ '; color: var(--accent); }
+
+.chat .c-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge-first { display: inline-block; padding: 0 5px; border-radius: 3px; background: var(--good); color: #0b2a1b; font-size: 10.5px; font-weight: 700; margin-right: 4px; }
+.badge-visits { display: inline-block; padding: 0 4px; border-radius: 3px; background: var(--tile-hi); color: var(--muted); font-size: 10.5px; margin-right: 4px; cursor: help; }
+.chat li.first .c-name { color: var(--good); font-weight: 600; }
+li.f-first .ic { color: var(--good); }
+li.f-first b { color: var(--good); }
+li.f-redeem .ic { color: #b58cff; }
+.chat-note { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+.summary { background: var(--tile); border-radius: 6px; padding: 8px 10px; margin-top: 10px; }
+.summary h2 { margin: 0 0 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.sum-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px 10px; }
+.sum-label { color: var(--muted); font-size: 11px; }
+.sum-value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sum-sub { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.delta { font-size: 11px; font-weight: 600; margin-left: 5px; }
+.delta.up { color: var(--good); }
+.delta.down { color: var(--bad); }
+.sum-names { margin-top: 6px; font-size: 12px; line-height: 1.4; word-break: break-word; }
+.sum-hint { margin-top: 6px; color: var(--muted); font-size: 11px; }

@@ -18,7 +18,7 @@ import { Updater } from './update.ts';
 import { writeLoader } from './overlay-loader.ts';
 import type { Transport } from './net/safe-download.ts';
 import { type Lang, effectiveLang, localize, tr } from './i18n.ts';
-import { StreamStats, STATS_SCOPES, STATS_EVENTS, STATS_EVENT_TYPES } from './stats.ts';
+import { StreamStats, STATS_SCOPES, STATS_EVENTS, STATS_EVENT_TYPES, type StreamSummary } from './stats.ts';
 import { readObsWsConfig, type ObsWsConfig } from './obs-ws.ts';
 import { writeStatsLoaders, type StatsLoaders } from './overlay-loader.ts';
 
@@ -48,6 +48,8 @@ export interface AppOptions {
   obsPollMs?: number;
   /** Интервалы опроса статистики Twitch (тесты). */
   statsIntervals?: ConstructorParameters<typeof StreamStats>[0]['intervals'];
+  /** Обрыв эфира короче этого — тот же стрим (тесты ставят 0). */
+  statsResumeMs?: number;
 }
 
 /**
@@ -129,6 +131,13 @@ export class App extends EventEmitter {
       obsConfig: () => this.obsWsConfig(),
       loadSession: () => this.db.getMeta('stats_session'),
       saveSession: (json) => this.db.setMeta('stats_session', json),
+      store: {
+        chatterVisits: (users, sessionId, now) => this.db.chatterVisits(users, sessionId, now),
+        trackingSince: () => this.db.chattersTrackingSince(),
+        saveSummary: (sum) => this.db.saveStreamSummary(sum),
+        summaries: (limit) => this.db.streamSummaries<StreamSummary>(limit),
+      },
+      resumeMs: opts.statsResumeMs,
       obsHost: opts.obsHost, obsPollMs: opts.obsPollMs, intervals: opts.statsIntervals,
     });
 
@@ -167,7 +176,11 @@ export class App extends EventEmitter {
     return {
       type: 'stats',
       lang: this.lang,
+      // Док и overlay перезагружаются, если бот обновился (иначе в OBS осталась бы старая версия страницы).
+      version: APP_VERSION,
       stats: { ...v, obs: { ...v.obs, message: v.obs.message ? tr(v.obs.message, this.lang) : '' } },
+      // Очередь оповещений — для дока (что играет, кто ждёт, «Пропустить» / «Пауза»).
+      queue: this.queue.snapshot(),
       overlay: {
         fields: s.statsOverlayFields.split(',').filter(Boolean), layout: s.statsOverlayLayout, style: s.statsOverlayStyle,
         labels: s.statsOverlayLabels, scale: s.statsOverlayScale,
@@ -209,7 +222,10 @@ export class App extends EventEmitter {
       if (st === 'auth_failed') this.journal('warn', 'obs', `${msg}. Проверьте пароль в «Статистика» → «Подключение к OBS».`);
     });
 
-    this.queue.on('change', (snap) => this.hub.broadcastPanel({ type: 'queue', queue: snap }));
+    this.queue.on('change', (snap) => {
+      this.hub.broadcastPanel({ type: 'queue', queue: snap });
+      if (this.hub.statsClientCount > 0) this.hub.broadcastStats(this.statsPayload());
+    });
     this.router.on('redemption', () => this.hub.broadcastPanel({ type: 'invalidate', what: 'redemptions' }));
 
     this.auth.on('state', () => { this.pushStatus(); this.stats.authChanged(); });
@@ -226,6 +242,11 @@ export class App extends EventEmitter {
     this.eventsub.on('status', () => this.pushStatus());
     this.eventsub.on('notification', (msg) => {
       if (STATS_EVENT_TYPES.has(msg.metadata?.subscription_type)) { this.stats.handleNotification(msg); return; }
+      if (msg.metadata?.subscription_type === 'channel.channel_points_custom_reward_redemption.add') {
+        const ev = (msg.payload.event ?? {}) as { id?: string; user_name?: string; user_login?: string; reward?: { title?: string } };
+        // Повторная доставка того же погашения в ленту не попадает.
+        if (ev.id && !this.db.hasRedemption(ev.id)) this.stats.noteRedemption(String(ev.user_name || ev.user_login || ''), String(ev.reward?.title ?? ''));
+      }
       this.router.handleNotification(msg);
     });
     this.eventsub.on('revocation', (msg) => {

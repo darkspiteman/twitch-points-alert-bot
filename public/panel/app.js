@@ -1367,6 +1367,66 @@
       statCard('Twitch', tw, a.status === 'ok' && miss.length ? [h('button', { class: 'small primary', text: T('Войти заново'), onclick: function () { act(post('/api/auth/login')).then(function () { location.hash = '#settings'; }); } })] : null)));
   }
 
+  // История стримов (итоги каждого эфира, 1.6.0).
+  function fmtLen(ms) {
+    if (!ms || ms < 0) return '—';
+    var m = Math.round(ms / 60000);
+    return Math.floor(m / 60) + ':' + (m % 60 < 10 ? '0' : '') + (m % 60);
+  }
+
+  function namesRow(label, names, total) {
+    if (!names || !names.length) return null;
+    return h('div', { class: 'small' }, h('b', { text: label + ': ' }),
+      names.join(', ') + (total > names.length ? ' ' + T('и ещё {0}', [total - names.length]) : ''));
+  }
+
+  function renderHistory(box) {
+    api('GET', '/api/stats/history').then(function (r) {
+      clear(box);
+      var list = r.summaries || [];
+      if (!list.length) { box.appendChild(h('div', { class: 'empty', text: T('Пока пусто: итоги появятся после первого стрима, во время которого был открыт док (или эта страница).') })); return; }
+      var tb = h('tbody');
+      list.forEach(function (s, i) {
+        var prev = list[i + 1] || null;
+        function cell(v, pv) {
+          var td = h('td', { class: 'num', text: v === null || v === undefined ? '—' : String(v) });
+          if (prev && v !== null && pv !== null && pv !== undefined && v !== pv) td.appendChild(h('span', { class: 'delta ' + (v > pv ? 'up' : 'down'), text: (v > pv ? ' ▲' : ' ▼') + Math.abs(v - pv) }));
+          return td;
+        }
+        var details = h('tr', { class: 'hist-details', hidden: true }, h('td', { colspan: '9' },
+          s.title ? h('div', { class: 'small muted', text: s.title + (s.game ? ' · ' + s.game : '') }) : null,
+          namesRow(T('Новые фолловеры'), s.followerNames, s.followers),
+          namesRow(T('Подписки'), s.subNames, s.subNames.length),
+          namesRow(T('Впервые в чате'), s.newChatterNames, s.newChatters),
+          namesRow(T('Рейды'), s.raids.map(function (x) { return x.name + ' (' + x.viewers + ')'; }), s.raids.length),
+          h('button', { class: 'small danger', text: T('Удалить запись'), onclick: function () {
+            if (!confirm(T('Удалить итоги стрима от {0}?', [fmtDateTime(s.startedAt)]))) return;
+            act(post('/api/stats/history/' + encodeURIComponent(s.id) + '/delete'), T('Удалено')).then(function () { renderHistory(box); });
+          } })));
+        var row = h('tr', { class: 'hist-row', title: T('Нажмите, чтобы увидеть имена') },
+          h('td', { class: 'num', title: fmtDateTime(s.startedAt), text: new Date(s.startedAt).toLocaleDateString(I18N.locale(), { day: '2-digit', month: '2-digit', year: '2-digit' }) }),
+          h('td', { class: 'num', text: fmtLen(s.endedAt - s.startedAt) }),
+          cell(s.avgViewers, prev && prev.avgViewers),
+          cell(s.peakViewers, prev && prev.peakViewers),
+          cell(s.followers, prev && prev.followers),
+          cell(s.subs + s.resubs, prev && prev.subs + prev.resubs),
+          cell(s.chatters, prev && prev.chatters),
+          cell(s.newChatters, prev && prev.newChatters),
+          cell(s.redemptions, prev && prev.redemptions));
+        row.addEventListener('click', function () { details.hidden = !details.hidden; });
+        tb.appendChild(row);
+        tb.appendChild(details);
+      });
+      box.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'hist' },
+        h('thead', null, h('tr', null,
+          h('th', { text: T('Дата') }), h('th', { text: T('Длительность') }), h('th', { text: T('Зрители в среднем') }), h('th', { text: T('Пик') }),
+          h('th', { text: T('Фолловеры') }), h('th', { text: T('Подписки') }), h('th', { text: T('В чате') }), h('th', { text: T('Впервые') }),
+          h('th', { text: T('Награды') }))),
+        tb)));
+      box.appendChild(h('p', { class: 'small muted', text: T('▲▼ — по сравнению с предыдущим стримом. Нажмите на строку, чтобы увидеть имена.') }));
+    }, function () { /* нет связи */ });
+  }
+
   function renderStats() {
     var root = clear($('page-stats'));
     root.appendChild(h('h1', { text: T('Статистика стрима') }));
@@ -1379,6 +1439,12 @@
     root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Предпросмотр док-панели') }),
       h('iframe', { class: 'stats-dock-frame', src: '/stats/dock?embed=1', title: T('Предпросмотр док-панели') })));
 
+    var hist = h('div');
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('История стримов') }),
+      h('p', { class: 'small muted', text: T('Итоги каждого эфира: зрители, новые фолловеры и подписки, сколько людей было в чате и сколько из них впервые. Бот считает, пока открыт док или эта страница.') }),
+      hist));
+    renderHistory(hist);
+
     // Док в OBS.
     var dockFile = fileUrl(su.dockLoader);
     root.appendChild(h('div', { class: 'grid cols-2' },
@@ -1389,7 +1455,9 @@
         dockFile ? copyField(dockFile, T('Адрес скопирован')) : null,
         h('ol', { start: '3' },
           h('li', { text: T('Нажмите «Применить». Появится окно — перетащите его к краю OBS, рядом с «Микшером» или «Сценами».') }),
-          h('li', { text: T('Значок ⚙ в доке — какие плитки показывать.') })),
+          h('li', { text: T('Значок ⚙ в доке — какие плитки и разделы показывать и за какими микрофонами следить.') })),
+        h('p', { class: 'small' }, h('b', { text: T('Streamlabs Desktop:') + ' ' }),
+          T('слева «Editor» → «Layout Editor» → перетащите элемент «Website» в свободное место, вставьте адрес ниже и нажмите «Save Changes». Битрейт и кадры в Streamlabs не показываются.')),
         h('div', { class: 'field' }, h('label', { text: T('Если адрес файла не открывается — используйте этот (тогда запускайте бота раньше OBS):') }),
           copyField(su.dockUrl, T('Адрес скопирован'), h('a', { class: 'btn', href: '/stats/dock', target: '_blank', text: T('Открыть') })))),
       h('div', { class: 'card' }, h('h2', { text: T('2. Подключение к OBS') }),
@@ -1439,7 +1507,9 @@
         h('li', { text: T('Время эфира, битрейт, разрешение, потери кадров, CPU — из OBS, обновляются каждые 2 секунды.') }),
         h('li', { text: T('Зрители — счётчик Twitch: сам Twitch обновляет его с задержкой 1–2 минуты, быстрее его не получить никому.') }),
         h('li', { text: T('«В чате» — кто сейчас на стриме и вошёл в Twitch, даже если молчит (без ботов и вас). Это число обычно появляется раньше счётчика зрителей; новые люди подсвечиваются в доке.') }),
-        h('li', { text: T('Фолловеры, подписки, подарки и рейды приходят от Twitch мгновенно и сразу видны в ленте событий.') }))));
+        h('li', { text: T('Фолловеры, подписки, подарки и рейды приходят от Twitch мгновенно и сразу видны в ленте событий.') }),
+        h('li', { text: T('Микрофон: если во время эфира все микрофоны выключены (или на нуле) либо их не слышно 2 минуты — в доке появится тревога. Лишние микрофоны (например, звук карты захвата) можно убрать значком ⚙.') }),
+        h('li', { text: T('«Впервые» и «×N» у зрителей в чате — бот запоминает, кто сколько стримов заходил (хранится только у вас на компьютере).') }))));
 
     renderStatsStatus();
     clearInterval(statsTimer);
