@@ -122,7 +122,11 @@
         ws.send(JSON.stringify({ type: 'probe', mediaId: m.id, ok: ok, durationMs: ok ? Math.round(el.duration * 1000) : 0, message: msg || '' }));
         el.removeAttribute('src'); el.load();
       };
-      el.addEventListener('loadedmetadata', function () { report(isFinite(el.duration) && el.duration > 0, 'неизвестная длительность'); });
+      el.addEventListener('loadedmetadata', function () {
+        // Видео, у которого браузер читает только звук (видеокодек не поддерживается), — картинки не будет.
+        if (m.kind === 'video' && !el.videoWidth) { report(false, 'браузер читает из файла только звук, картинку — нет (видеокодек не поддерживается)'); return; }
+        report(isFinite(el.duration) && el.duration > 0, 'неизвестная длительность');
+      });
       el.addEventListener('error', function () { report(false, el.error ? 'код ' + el.error.code : 'ошибка'); });
       setTimeout(function () { report(false, 'превышено время проверки'); }, 15000);
       el.src = '/media/' + m.id;
@@ -574,8 +578,16 @@
     var status = h('p', { class: 'small muted', text: 'Нажмите «Начать».' });
     var replace = h('input', { type: 'checkbox', checked: true });
     var running = false, cancelled = false, rec = null, ctx = null, tick = 0, guard = 0;
+    var canvas = null, drawTimer = 0, sawPicture = false, samples = 0;
+    function noPictureMsg() {
+      var codec = /видео в кодеке ([^—,]+?)(?: —| и звук|,|$)/.exec(m.status_msg || '');
+      return 'Браузер читает из этого файла только звук, а картинку — нет' + (codec ? ' (видео в кодеке ' + codec[1].trim() + ')' : '') +
+        '. Перекодируйте файл бесплатной программой HandBrake в MP4 (H.264 + AAC) и загрузите заново.';
+    }
     function cleanup() {
       clearInterval(tick); clearTimeout(guard);
+      if (drawTimer) clearInterval(drawTimer);
+      canvas = null;
       try { el.pause(); } catch (e) { /* */ }
       el.removeAttribute('src'); try { el.load(); } catch (e) { /* */ }
       if (ctx) { ctx.close().catch(function () {}); ctx = null; }
@@ -619,11 +631,40 @@
         src.connect(dest); // в колонки не выводим: запись идёт беззвучно
         var tracks = dest.stream.getAudioTracks();
         if (isVideo) {
-          var cs = el.captureStream ? el.captureStream() : null;
-          if (!cs) throw new Error('Браузер не умеет захватывать видео. Откройте панель в Chrome или Edge.');
-          tracks = cs.getVideoTracks().concat(tracks);
+          // Видеодорожку браузер не читает (например, MPEG-4/DivX): он играет только звук, картинка была бы чёрной.
+          if (!el.videoWidth || !el.videoHeight) throw new Error(noPictureMsg());
+          // Кадры рисуются в canvas и записываются оттуда: прямой захват видео (captureStream) на части компьютеров
+          // отдаёт чёрные кадры (аппаратное декодирование H.265, HDR). Заодно проверяем, что картинка не пустая.
+          var scale = Math.min(1, Math.sqrt(1920 * 1080 / (el.videoWidth * el.videoHeight)));
+          canvas = document.createElement('canvas');
+          canvas.width = Math.round(el.videoWidth * scale / 2) * 2;
+          canvas.height = Math.round(el.videoHeight * scale / 2) * 2;
+          var g = canvas.getContext('2d');
+          var cs = canvas.captureStream ? canvas.captureStream(0) : null;
+          if (!cs || !g) throw new Error('Браузер не умеет записывать видео. Откройте панель в Chrome или Edge.');
+          var vtrack = cs.getVideoTracks()[0];
+          var probeCanvas = document.createElement('canvas');
+          probeCanvas.width = 32; probeCanvas.height = 18;
+          var pg = probeCanvas.getContext('2d', { willReadFrequently: true });
+          var frames = 0;
+          var draw = function () {
+            if (!canvas) return;
+            g.drawImage(el, 0, 0, canvas.width, canvas.height);
+            if (vtrack.requestFrame) vtrack.requestFrame();
+            // Яркость кадра (уменьшенная копия): раз в ~15 кадров.
+            if (frames++ % 15 === 0) {
+              pg.drawImage(canvas, 0, 0, 32, 18);
+              var d = pg.getImageData(0, 0, 32, 18).data;
+              for (var i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 30) { sawPicture = true; break; }
+              samples++;
+            }
+          };
+          // Ровные 30 кадров/с по таймеру: события отрисовки (requestAnimationFrame) браузер замедляет,
+          // если окно частично скрыто, — видео получилось бы рваным.
+          drawTimer = setInterval(function () { if (!el.paused && !el.ended) draw(); }, 1000 / 30);
+          tracks = [vtrack].concat(tracks);
         }
-        var px = (el.videoWidth || 0) * (el.videoHeight || 0);
+        var px = isVideo ? canvas.width * canvas.height : 0;
         var opts = { mimeType: type, audioBitsPerSecond: 160000 };
         if (isVideo) opts.videoBitsPerSecond = px >= 1800000 ? 8000000 : px >= 830000 ? 5000000 : 2500000;
         rec = new MediaRecorder(new MediaStream(tracks), opts);
@@ -647,6 +688,8 @@
           if (cancelled === 'error') throw new Error('Воспроизведение прервалось с ошибкой — браузер не смог дочитать файл.');
           if (cancelled) return null;
           if (reached < dur - 1) throw new Error('Запись прервалась на ' + Math.floor(reached) + ' с из ' + Math.ceil(dur) + '. Попробуйте ещё раз и не сворачивайте браузер.');
+          if (isVideo && !samples) throw new Error('Браузер не отдал ни одного кадра — окно было свёрнуто или вкладка в фоне. Попробуйте ещё раз, не переключаясь.');
+          if (isVideo && !sawPicture) throw new Error('Получилась чёрная картинка: браузер не показывает видео из этого файла. ' + noPictureMsg().replace(/^Браузер читает из этого файла только звук, а картинку — нет[^.]*\. /, ''));
           var blob = new Blob(chunks, { type: type.split(';')[0] });
           bar.value = 100;
           status.textContent = 'Сохранение (' + fmtSize(blob.size) + ')…';
@@ -703,7 +746,8 @@
         } }));
       } else {
         prev = m.kind === 'image' ? h('img', { src: url, alt: '' })
-          : m.kind === 'video' ? h('video', { src: url, controls: true, preload: 'metadata' })
+          // «#t=0.1» — чтобы на карточке был виден первый кадр (у WebM без этого превью бывает чёрным до запуска).
+          : m.kind === 'video' ? h('video', { src: url + '#t=0.1', controls: true, preload: 'metadata' })
           : h('audio', { src: url, controls: true, preload: 'none' });
       }
       var origin = m.source === 'klipy' ? 'Klipy (онлайн)' : m.source === 'freesound' ? 'Freesound' : m.source === 'url' ? 'по ссылке' : '';
