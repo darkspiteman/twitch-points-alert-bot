@@ -65,6 +65,7 @@ Twitch **не поддерживает PKCE** (в документации Autho
 | `router.ts` | обработка погашений: дедупликация, фильтры, восстановление пропусков |
 | `queue.ts` | очередь воспроизведения |
 | `media.ts` | медиатека: проверка форматов по сигнатурам, безопасные пути |
+| `media-codecs.ts` | кодеки внутри MP4 (разбор box: stsd, avcC, esds) и WebM (CodecID); что поддерживает браузерный движок OBS/Streamlabs. Несовместимый файл перекодируется в браузере панели (MediaRecorder → WebM VP9 + Opus) и заменяется у наград через `/api/media/:id/transcoded` |
 | `server/http.ts` | HTTP API, статика, защита (Host/Origin/CSRF, traversal, CSP) |
 | `server/hub.ts` | WebSocket для overlay и панели |
 | `stream-app.ts` | программа для стрима: OBS Studio / Streamlabs Desktop — определение по User-Agent (`OBS/…`, метка `SLD`), путь к exe, резервная копия сцен |

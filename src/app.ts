@@ -13,6 +13,7 @@ import { Hub } from './server/hub.ts';
 import { Backoff } from './backoff.ts';
 import { MediaFinder } from './find.ts';
 import { STREAM_APPS, backupScenes as copySceneFiles } from './stream-app.ts';
+import { isCodecMessage } from './media.ts';
 import { Updater } from './update.ts';
 import { writeLoader } from './overlay-loader.ts';
 import type { Transport } from './net/safe-download.ts';
@@ -124,8 +125,14 @@ export class App extends EventEmitter {
     this.hub.onMediaProbe = (mediaId, ok, durationMs, message) => {
       const m = this.db.getMedia(mediaId);
       if (!m) return;
-      if (ok) this.db.updateMediaStatus(mediaId, m.status === 'broken' ? 'ok' : m.status, m.status === 'broken' ? '' : m.status_msg, durationMs);
-      else this.db.updateMediaStatus(mediaId, 'broken', `Браузер не может воспроизвести файл: ${message}`);
+      // Предпросмотр в браузере панели снимает только свою же ошибку: ошибку из OBS/Streamlabs (другой движок, меньше кодеков) он не отменяет.
+      const ownError = m.status === 'broken' && (m.status_msg.startsWith('Браузер не может') || m.status_msg.includes('Браузер панели тоже'));
+      if (ok) this.db.updateMediaStatus(mediaId, ownError ? 'ok' : m.status, ownError ? '' : m.status_msg, durationMs);
+      else if (m.status === 'warning' && isCodecMessage(m.status_msg)) {
+        // Кодек уже назван при загрузке — сохраняем причину, но перекодировать в панели не выйдет.
+        const reason = m.status_msg.replace(/ Нажмите «Перекодировать».*$/, '');
+        this.db.updateMediaStatus(mediaId, 'broken', `${reason} Браузер панели тоже не может его прочитать — перекодируйте файл бесплатной программой HandBrake в MP4 (H.264 + AAC) и загрузите заново.`);
+      } else this.db.updateMediaStatus(mediaId, 'broken', `Браузер не может воспроизвести файл: ${message}`);
       this.hub.broadcastPanel({ type: 'invalidate', what: 'media' });
     };
 
@@ -198,7 +205,12 @@ export class App extends EventEmitter {
       this.initialSync = this.syncRewards().catch((e) => this.log.warn('Синхронизация наград при старте не удалась', e));
       this.eventsub.start();
     }
-    try { this.media.verifyAll(); } catch (e) { this.log.warn('Проверка медиафайлов не удалась', e); }
+    try {
+      // Разбор кодеков у старых файлов — один раз после обновления (до 1.3.0 кодеки не проверялись).
+      const deep = this.db.getMeta('codec_scan') !== '1';
+      const r = this.media.verifyAll(deep);
+      if (deep) { this.db.setMeta('codec_scan', '1'); if (r.warnings) this.log.info(`Проверка кодеков: предупреждений — ${r.warnings}`); }
+    } catch (e) { this.log.warn('Проверка медиафайлов не удалась', e); }
     const s = this.db.getSettings();
     this.db.cleanup(s.historyRetentionDays);
     this.cleanupTimer = setInterval(() => { try { this.db.cleanup(this.db.getSettings().historyRetentionDays); } catch { /* */ } }, 6 * 3600_000);

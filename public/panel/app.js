@@ -556,6 +556,118 @@
     next();
   }
 
+  // Перекодирование в браузере панели: файл проигрывается здесь (браузер знает больше кодеков, чем OBS/Streamlabs)
+  // и записывается заново в WebM (VP9/VP8 + Opus) — этот формат понимают OBS и Streamlabs. Внешние программы не нужны.
+  function recorderType(isVideo) {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+    var list = isVideo ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'] : ['audio/webm;codecs=opus', 'audio/webm'];
+    for (var i = 0; i < list.length; i++) if (MediaRecorder.isTypeSupported(list[i])) return list[i];
+    return '';
+  }
+
+  function transcodeMedia(m) {
+    var isVideo = m.kind === 'video';
+    var type = recorderType(isVideo);
+    if (!type) { toast('Этот браузер не умеет записывать WebM. Откройте панель в Chrome или Edge.', 'bad'); return; }
+    var el = h(isVideo ? 'video' : 'audio', { class: 'transcode-preview', preload: 'auto', playsinline: true });
+    var bar = h('progress', { class: 'transcode-bar', max: 100, value: 0 });
+    var status = h('p', { class: 'small muted', text: 'Нажмите «Начать».' });
+    var replace = h('input', { type: 'checkbox', checked: true });
+    var running = false, cancelled = false, rec = null, ctx = null, tick = 0, guard = 0;
+    function cleanup() {
+      clearInterval(tick); clearTimeout(guard);
+      try { el.pause(); } catch (e) { /* */ }
+      el.removeAttribute('src'); try { el.load(); } catch (e) { /* */ }
+      if (ctx) { ctx.close().catch(function () {}); ctx = null; }
+    }
+    function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); }
+    var startBtn = h('button', { class: 'primary', text: 'Начать', onclick: start });
+    var cancelBtn = h('button', { text: 'Отмена', onclick: function () { cancelled = true; stopRec(); cleanup(); closeModal(); } });
+    modal('Перекодировать «' + m.name + '»', h('div', null,
+      h('p', { class: 'small', text: 'Файл проиграется в этом окне и запишется заново в WebM (' + (isVideo ? 'VP9 + Opus' : 'Opus') +
+        ') — этот формат понимают OBS и Streamlabs. Это займёт примерно столько же времени, сколько длится файл. Не закрывайте окно и не сворачивайте браузер.' }),
+      isVideo ? h('div', { class: 'transcode-box' }, el) : el, bar, status,
+      h('label', { class: 'check' }, replace, m.usedBy.length ? 'Заменить файл у наград (' + m.usedBy.join(', ') + ') и удалить исходный' : 'Удалить исходный файл после перекодирования')),
+      [startBtn, cancelBtn]);
+
+    function fail(msg) {
+      running = false; cleanup();
+      status.textContent = msg; status.className = 'small bad-text';
+      startBtn.disabled = true;
+    }
+
+    function start() {
+      if (running) return;
+      running = true; startBtn.disabled = true;
+      status.className = 'small muted'; status.textContent = 'Загрузка файла…';
+      // AudioContext создаётся сразу по клику — иначе браузер может не разрешить звук.
+      var AC = window.AudioContext || window.webkitAudioContext;
+      try { ctx = new AC(); } catch (e) { fail('Браузер не дал доступ к звуку: ' + e.message); return; }
+      var ready = new Promise(function (resolve, reject) {
+        el.addEventListener('loadedmetadata', resolve, { once: true });
+        el.addEventListener('error', function () {
+          reject(new Error('Браузер тоже не может прочитать этот файл (' + (el.error ? 'код ' + el.error.code : 'ошибка') + '). Перекодируйте его бесплатной программой HandBrake в MP4 (H.264 + AAC) и загрузите заново.'));
+        }, { once: true });
+      });
+      el.src = '/media/' + m.id;
+      ready.then(function () {
+        var dur = el.duration;
+        if (!isFinite(dur) || dur <= 0) throw new Error('Не удалось определить длительность файла.');
+        if (dur > 600) throw new Error('Файл длиннее 10 минут — перекодируйте его программой HandBrake в MP4 (H.264 + AAC).');
+        var src = ctx.createMediaElementSource(el);
+        var dest = ctx.createMediaStreamDestination();
+        src.connect(dest); // в колонки не выводим: запись идёт беззвучно
+        var tracks = dest.stream.getAudioTracks();
+        if (isVideo) {
+          var cs = el.captureStream ? el.captureStream() : null;
+          if (!cs) throw new Error('Браузер не умеет захватывать видео. Откройте панель в Chrome или Edge.');
+          tracks = cs.getVideoTracks().concat(tracks);
+        }
+        var px = (el.videoWidth || 0) * (el.videoHeight || 0);
+        var opts = { mimeType: type, audioBitsPerSecond: 160000 };
+        if (isVideo) opts.videoBitsPerSecond = px >= 1800000 ? 8000000 : px >= 830000 ? 5000000 : 2500000;
+        rec = new MediaRecorder(new MediaStream(tracks), opts);
+        var chunks = [];
+        rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+        var stopped = new Promise(function (resolve) { rec.onstop = resolve; });
+        el.addEventListener('ended', stopRec, { once: true });
+        el.addEventListener('error', function () { cancelled = 'error'; stopRec(); }, { once: true });
+        ctx.resume().catch(function () {});
+        rec.start(1000);
+        var played = el.play();
+        tick = setInterval(function () {
+          if (!document.body.contains(bar)) { cancelled = true; stopRec(); return; } // окно закрыли
+          bar.value = Math.min(100, el.currentTime / dur * 100);
+          status.textContent = 'Запись: ' + Math.floor(el.currentTime) + ' из ' + Math.ceil(dur) + ' с';
+        }, 250);
+        guard = setTimeout(stopRec, (dur * 2 + 20) * 1000); // воспроизведение зависло
+        return Promise.resolve(played).then(function () { return stopped; }).then(function () {
+          var reached = el.currentTime;
+          cleanup();
+          if (cancelled === 'error') throw new Error('Воспроизведение прервалось с ошибкой — браузер не смог дочитать файл.');
+          if (cancelled) return null;
+          if (reached < dur - 1) throw new Error('Запись прервалась на ' + Math.floor(reached) + ' с из ' + Math.ceil(dur) + '. Попробуйте ещё раз и не сворачивайте браузер.');
+          var blob = new Blob(chunks, { type: type.split(';')[0] });
+          bar.value = 100;
+          status.textContent = 'Сохранение (' + fmtSize(blob.size) + ')…';
+          var base = m.name.replace(/\.[a-z0-9]{2,5}$/i, '');
+          return api('PUT', '/api/media', blob, { 'x-file-name': encodeURIComponent(base + (replace.checked ? '' : ' (WebM)') + '.webm'), 'Content-Type': 'application/octet-stream' })
+            .then(function (row) {
+              return post('/api/media/' + row.id + '/transcoded', { from: m.id, durationMs: Math.round(dur * 1000), replace: replace.checked, confirm: replace.checked })
+                .then(function (r) { return { row: row, r: r }; });
+            });
+        });
+      }).then(function (res) {
+        running = false;
+        if (!res) return;
+        closeModal();
+        toast('Готово: «' + m.name + '» перекодирован в WebM' + (res.r.rewards ? ', наград переключено: ' + res.r.rewards : '') + '. Проверьте кнопкой «▶ В ' + appShort() + '».', 'ok');
+        probed = {};
+        load();
+      }, function (e) { fail(e.message || String(e)); });
+    }
+  }
+
   function renderMedia() {
     var root = clear($('page-media'));
     var fileInput = h('input', { type: 'file', multiple: true, accept: '.mp3,.wav,.ogg,.m4a,.webm,.mp4,.gif,.png,.jpg,.jpeg,.webp', style: 'display:none', onchange: function () { uploadFiles(fileInput.files); fileInput.value = ''; } });
@@ -563,13 +675,13 @@
       h('div', { class: 'row' },
         h('button', { text: 'Проверить все файлы', onclick: function () {
           probed = {};
-          act(post('/api/media/verify')).then(function (r) { toast('Проверено: ' + r.checked + ', повреждено: ' + r.broken, r.broken ? 'bad' : 'ok'); load(); });
+          act(post('/api/media/verify')).then(function (r) { toast('Проверено: ' + r.checked + ', повреждено: ' + r.broken + (r.warnings ? ', с предупреждениями: ' + r.warnings : ''), r.broken ? 'bad' : r.warnings ? '' : 'ok'); load(); });
         } }),
         h('button', { text: 'Открыть папку', onclick: function () { act(post('/api/open-folder', { which: 'media' })); } }),
         h('a', { class: 'btn primary', href: '#find', text: '🔎 Найти медиа' }))));
     var dz = h('div', { class: 'dropzone', onclick: function () { fileInput.click(); } },
       h('div', { text: 'Перетащите файлы сюда или нажмите для выбора' }),
-      h('div', { class: 'small', text: 'MP3, WAV, OGG, M4A, WebM, MP4 (H.264), GIF, PNG, JPG, WebP — до 200 МБ' }));
+      h('div', { class: 'small', text: 'MP3, WAV, OGG, M4A, WebM, MP4 (H.264; другие кодеки — кнопкой «Перекодировать»), GIF, PNG, JPG, WebP — до 200 МБ' }));
     dz.addEventListener('dragover', function (e) { e.preventDefault(); dz.classList.add('over'); });
     dz.addEventListener('dragleave', function () { dz.classList.remove('over'); });
     dz.addEventListener('drop', function (e) { e.preventDefault(); dz.classList.remove('over'); uploadFiles(e.dataTransfer.files); });
@@ -595,7 +707,7 @@
           : h('audio', { src: url, controls: true, preload: 'none' });
       }
       var origin = m.source === 'klipy' ? 'Klipy (онлайн)' : m.source === 'freesound' ? 'Freesound' : m.source === 'url' ? 'по ссылке' : '';
-      var st = m.status === 'broken' ? h('span', { class: 'badge bad', text: 'повреждён' }) : m.status === 'warning' ? h('span', { class: 'badge warn', text: 'внимание' }) : h('span', { class: 'badge ok', text: 'OK' });
+      var st = m.status === 'broken' ? h('span', { class: 'badge bad', text: /^Файл/.test(m.status_msg || '') ? 'повреждён' : 'не воспроизводится' }) : m.status === 'warning' ? h('span', { class: 'badge warn', text: 'внимание' }) : h('span', { class: 'badge ok', text: 'OK' });
       grid.appendChild(h('div', { class: 'media-card' },
         h('div', { class: 'media-preview' }, prev),
         h('div', { class: 'media-info' },
@@ -607,6 +719,10 @@
           h('div', { class: 'small muted', text: m.usedBy.length ? 'Используется: ' + m.usedBy.join(', ') : 'Не используется' }),
           h('div', { class: 'media-actions' },
             h('button', { class: 'small primary', text: '▶ В ' + appShort(), onclick: function () { act(post('/api/media/' + m.id + '/test'), 'Отправлено в overlay'); } }),
+            // Перекодирование: для видео всегда, для звука — если с ним проблема.
+            m.source !== 'klipy' && (m.kind === 'video' || (m.kind === 'audio' && m.status !== 'ok')) && !/^Браузер не может|Браузер панели тоже/.test(m.status_msg || '')
+              ? h('button', { class: 'small' + (m.status !== 'ok' ? ' warn-btn' : ''), text: 'Перекодировать', title: 'Пересохранить в WebM, который понимают OBS и Streamlabs', onclick: function () { transcodeMedia(m); } })
+              : null,
             h('button', { class: 'small', text: 'Переименовать', onclick: function () {
               var n = prompt('Новое имя файла:', m.name); if (n) act(post('/api/media/' + m.id + '/rename', { name: n })).then(load);
             } }),

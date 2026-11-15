@@ -6,7 +6,7 @@ import type { App } from '../app.ts';
 import { PUBLIC_DIR, validateSettingsPatch, publicSettings, SUPPORT_LINKS } from '../config.ts';
 import { FindError, KLIPY_TYPES, type KlipyType } from '../find.ts';
 import { HelixError } from '../twitch/helix.ts';
-import { MAX_UPLOAD_BYTES } from '../media.ts';
+import { MAX_UPLOAD_BYTES, isRemote } from '../media.ts';
 import { getAutostart, setAutostart } from '../autostart.ts';
 import { STREAM_APPS, resolveExe } from '../stream-app.ts';
 
@@ -193,7 +193,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       return row;
     } catch (e) { throw new HttpError(400, (e as Error).message); }
   }, true);
-  add('POST', '/api/media/verify', () => app.media.verifyAll());
+  add('POST', '/api/media/verify', () => app.media.verifyAll(true));
   add('POST', '/api/media/:id/delete', (_q, _r, p, body) => {
     const b = (body ?? {}) as { confirm?: boolean; force?: boolean };
     if (b.confirm !== true) throw new HttpError(400, 'Требуется подтверждение удаления');
@@ -203,6 +203,28 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     if (b.force) app.db.raw.prepare('UPDATE rewards SET media_id = NULL WHERE media_id = ?').run(p.id), app.db.raw.prepare('UPDATE rewards SET sound_id = NULL WHERE sound_id = ?').run(p.id), app.db.raw.prepare('UPDATE rewards SET video_id = NULL WHERE video_id = ?').run(p.id);
     app.journal('info', 'media', `Удалён файл «${m?.name}»`);
     return r;
+  });
+  // Файл перекодирован в браузере панели (WebM): длительность, при желании — замена исходного файла у наград.
+  add('POST', '/api/media/:id/transcoded', (_q, _r, p, body) => {
+    const b = (body ?? {}) as { from?: string; durationMs?: number; replace?: boolean; confirm?: boolean };
+    const row = app.db.getMedia(p.id);
+    const from = app.db.getMedia(String(b.from ?? ''));
+    if (!row || !from) throw new HttpError(404, 'Файл не найден');
+    if (row.id === from.id || isRemote(row) || isRemote(from)) throw new HttpError(400, 'Неверный файл');
+    const durationMs = Number(b.durationMs);
+    if (Number.isFinite(durationMs) && durationMs > 0 && durationMs < 24 * 3600_000) app.db.updateMediaStatus(row.id, row.status, row.status_msg, durationMs);
+    let rewards = 0;
+    if (b.replace) {
+      if (b.confirm !== true) throw new HttpError(400, 'Требуется подтверждение замены');
+      for (const col of ['media_id', 'video_id', 'sound_id']) {
+        rewards += Number(app.db.raw.prepare(`UPDATE rewards SET ${col} = ? WHERE ${col} = ?`).run(row.id, from.id).changes);
+      }
+      app.media.remove(from.id, true);
+      app.db.renameMedia(row.id, from.name.replace(/\.[a-z0-9]{2,5}$/i, '') + '.webm');
+    }
+    app.journal('info', 'media', `«${from.name}» перекодирован в WebM${b.replace ? `: исходный файл заменён${rewards ? `, наград переключено: ${rewards}` : ''}` : ` — новый файл «${row.name}»`}`);
+    app.hub.broadcastPanel({ type: 'invalidate', what: 'rewards' });
+    return { ok: true, rewards };
   });
   add('POST', '/api/media/:id/rename', (_q, _r, p, body) => {
     const name = String((body as { name?: string } | null)?.name ?? '').trim().slice(0, 120);

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { Db, MediaRow } from './db.ts';
+import { detectCodecs, codecWarnings } from './media-codecs.ts';
 
 export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
@@ -57,13 +58,20 @@ export function sniffFormat(buf: Buffer): FormatInfo | null {
 export function compatibilityWarnings(buf: Buffer, fmt: FormatInfo): string[] {
   const warn: string[] = [];
   if (fmt.ext === 'mp4' || fmt.ext === 'm4a') {
+    const tracks = detectCodecs(buf, 'mp4');
     const s = buf.toString('latin1');
-    if (s.includes('hvc1') || s.includes('hev1')) warn.push('Видео в кодеке H.265/HEVC может не воспроизводиться в OBS. Рекомендуется H.264 (MP4) или VP9 (WebM).');
+    if (tracks.length) warn.push(...codecWarnings(tracks));
+    // Дорожки не разобраны (необычная структура) — хотя бы самый частый случай: H.265 с телефона.
+    else if (s.includes('hvc1') || s.includes('hev1')) warn.push(...codecWarnings([{ type: 'video', id: 'hvc1', name: 'H.265/HEVC', ok: false, note: 'может не воспроизводиться' }]));
     if (!s.includes('moov')) warn.push('Не найден индекс MP4 (moov) — файл может быть повреждён или не дозаписан.');
   }
-  if (fmt.ext === 'webm' && fmt.kind === 'video') {
-    const head = buf.subarray(0, Math.min(buf.length, 4096)).toString('latin1');
-    if (!head.includes('V_VP8') && !head.includes('V_VP9') && !head.includes('V_AV1')) warn.push('Не удалось определить видеокодек WebM.');
+  if (fmt.ext === 'webm') {
+    const tracks = detectCodecs(buf, 'webm');
+    if (tracks.length) warn.push(...codecWarnings(tracks));
+    else if (fmt.kind === 'video') {
+      const head = buf.subarray(0, Math.min(buf.length, 4096)).toString('latin1');
+      if (!head.includes('V_VP8') && !head.includes('V_VP9') && !head.includes('V_AV1')) warn.push('Не удалось определить видеокодек WebM.');
+    }
   }
   return warn;
 }
@@ -161,22 +169,42 @@ export class MediaLibrary {
     return { ok: true };
   }
 
-  /** Проверка всех файлов: существуют ли и распознаются ли. */
-  verifyAll(): { checked: number; broken: number } {
+  /**
+   * Проверка всех файлов: существуют ли и распознаются ли.
+   * deep — ещё и разбор кодеков видео/звука (читает файлы MP4/WebM целиком): по кнопке «Проверить все файлы»
+   * и один раз после обновления, чтобы предупреждения появились и у файлов, загруженных раньше.
+   */
+  verifyAll(deep = false): { checked: number; broken: number; warnings: number } {
     let broken = 0;
+    let warnings = 0;
     const rows = this.db.listMedia();
     for (const r of rows) {
       if (isRemote(r)) continue;
       const p = this.filePath(r);
       if (!p || !fs.existsSync(p)) { this.db.updateMediaStatus(r.id, 'broken', 'Файл отсутствует на диске'); broken++; continue; }
       const fd = fs.openSync(p, 'r');
-      const head = Buffer.alloc(Math.min(65536, fs.fstatSync(fd).size));
+      const size = fs.fstatSync(fd).size;
+      const head = Buffer.alloc(Math.min(65536, size));
       fs.readSync(fd, head, 0, head.length, 0);
       fs.closeSync(fd);
-      const fmt = sniffFormat(head);
-      if (!fmt) { this.db.updateMediaStatus(r.id, 'broken', 'Файл повреждён: формат не распознан'); broken++; }
-      else if (r.status === 'broken' && r.status_msg.startsWith('Файл')) this.db.updateMediaStatus(r.id, 'ok', '');
+      let fmt = sniffFormat(head);
+      if (!fmt) { this.db.updateMediaStatus(r.id, 'broken', 'Файл повреждён: формат не распознан'); broken++; continue; }
+      // Файл на месте и распознан: снимаем «отсутствует/повреждён», а при полной проверке — и ошибку воспроизведения
+      // (её снова поставит OBS/Streamlabs, если файл и правда не играет; несовместимый кодек отметит разбор ниже).
+      if (r.status === 'broken' && (r.status_msg.startsWith('Файл') || deep)) { this.db.updateMediaStatus(r.id, 'ok', ''); r.status = 'ok'; r.status_msg = ''; }
+      if (deep && ['mp4', 'webm'].includes(fmt.ext) && size <= MAX_UPLOAD_BYTES) {
+        if (fmt.ext === 'mp4' && r.file_name.endsWith('.m4a')) fmt = { ext: 'm4a', mime: 'audio/mp4', kind: 'audio' };
+        const warn = compatibilityWarnings(fs.readFileSync(p), fmt);
+        if (warn.length && r.status !== 'broken') { this.db.updateMediaStatus(r.id, 'warning', warn.join(' ')); warnings++; }
+        else if (!warn.length && r.status === 'warning' && isCodecMessage(r.status_msg)) this.db.updateMediaStatus(r.id, 'ok', '');
+        else if (warn.length) warnings++;
+      } else if (r.status === 'warning') warnings++;
     }
-    return { checked: rows.filter((r) => !isRemote(r)).length, broken };
+    return { checked: rows.filter((r) => !isRemote(r)).length, broken, warnings };
   }
+}
+
+/** Сообщение о кодеке (предупреждение при загрузке или ошибка воспроизведения) — его снимает повторная проверка. */
+export function isCodecMessage(msg: string): boolean {
+  return /^В файле .*(кодеке|формате)|H\.265\/HEVC|Видео в кодеке/.test(msg);
 }

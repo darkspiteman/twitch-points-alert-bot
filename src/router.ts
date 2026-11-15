@@ -38,6 +38,13 @@ export interface RouterDeps {
  * Обработка погашений: дедупликация, фильтры (включена ли награда, режим, антиспам),
  * постановка в очередь, восстановление пропущенных событий после разрыва.
  */
+/** Почему файл не будет показан: нет на диске, не распознан или не воспроизводится (с причиной). */
+function unplayable(m: MediaRow): string {
+  if (m.status === 'broken' && m.status_msg && !m.status_msg.startsWith('Файл')) return `Файл «${m.name}» не воспроизводится: ${m.status_msg}`;
+  if (m.status === 'broken' && m.status_msg) return `«${m.name}»: ${m.status_msg}`;
+  return `Файл «${m.name}» отсутствует на диске`;
+}
+
 export class RedemptionRouter extends EventEmitter {
   private d: RouterDeps;
   /** Статусы событий Twitch по redemption id — нужны для FULFILLED/CANCELED. */
@@ -168,7 +175,7 @@ export class RedemptionRouter extends EventEmitter {
   /** Тест медиафайла без награды. */
   testMedia(media: MediaRow, volume = 100): { ok: boolean; error?: string } {
     const ref = this.ref(media);
-    if (!ref) return { ok: false, error: 'Файл отсутствует или повреждён' };
+    if (!ref) return { ok: false, error: unplayable(media) };
     const item: PlayItem = {
       id: `test-${crypto.randomUUID()}`, redemptionId: null, rewardId: '', rewardTitle: `Файл: ${media.name}`, userName: 'Тест', userInput: '',
       visual: media.kind === 'audio' ? null : ref, audio: media.kind === 'audio' ? ref : null, volume: volume / 100, durationMs: 0, delayMs: 0,
@@ -192,7 +199,7 @@ export class RedemptionRouter extends EventEmitter {
       const m = this.d.db.getMedia(id);
       if (!m) return { ref: null, err: `${label} удалён(о) из медиатеки` };
       const r = this.ref(m);
-      return r ? { ref: r, err: null } : { ref: null, err: `Файл «${m.name}» отсутствует или повреждён` };
+      return r ? { ref: r, err: null } : { ref: null, err: unplayable(m) };
     };
     const main = load(reward.media_id, 'Основной файл');
     const video = load(reward.video_id, 'Видео');
@@ -241,7 +248,12 @@ export class RedemptionRouter extends EventEmitter {
     if (result === 'failed') {
       this.d.journal('error', 'playback', `«${item.rewardTitle}»: ${message}`);
       const m = item.visual ?? item.audio;
-      if (m && !m.remote && /декод|decode|не поддерж|MEDIA_ERR|повреж/i.test(message)) this.d.db.updateMediaStatus(m.id, 'broken', message);
+      if (m && !m.remote && /декод|decode|не поддерж|MEDIA_ERR|повреж/i.test(message)) {
+        const row = this.d.db.getMedia(m.id);
+        const fix = row && row.kind !== 'image' ? ' Нажмите «Перекодировать» у файла в разделе «Медиа».' : '';
+        this.d.db.updateMediaStatus(m.id, 'broken', `Не воспроизводится в программе для стрима: ${message.replace(/^Ошибка воспроизведения: /, '')}.${fix}`);
+        if (fix) this.d.journal('warn', 'media', `«${row!.name}» не воспроизводится в программе для стрима.${fix}`);
+      }
     }
     if (!item.redemptionId) return;
     const status = result === 'done' ? 'done' : result;
