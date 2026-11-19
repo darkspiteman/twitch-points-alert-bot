@@ -1,5 +1,27 @@
 [
   {
+    "version": "1.7.0",
+    "date": "2026-11-20",
+    "changes": [
+      "Озвучка текста зрителя: у награды появилась галочка «🗣 Озвучить текст зрителя» — бот читает вслух то, что зритель написал, голосом Windows (после звука или видео награды). Интернет не нужен.",
+      "Ссылки читаются как «ссылка», мат заменяется на «пи-ип», длинный текст обрезается; можно добавить свои запрещённые слова. Голос, скорость и громкость — в «Настройках» → «Озвучка текста зрителя», там же кнопка «Озвучить» для проверки.",
+      "«Награды бота — только во время эфира»: когда стрим заканчивается, бот ставит свои награды на паузу в Twitch, а при начале эфира снимает. Награды, поставленные на паузу вручную, не трогает.",
+      "Кнопка «📍 Метка» в доке во время эфира: ставит отметку в записи трансляции — по ней легко найти момент для нарезки. Метки видны в ленте событий и в итогах стрима.",
+      "В итогах стрима — какие награды брали чаще всего и кто больше всех потратил баллов; в «Статистике» — такой же топ за всё сохранённое время.",
+      "Шаутаут рейдеру: у рейда в ленте дока кнопка «📣 Шаутаут» — в вашем чате появится карточка канала рейдера с кнопкой «Отслеживать». Галочка «Шаутаут рейдеру автоматически» в «Настройках» делает это сама через 5 секунд после рейда.",
+      "Для меток и шаутаута Twitch спросит новые разрешения: «Настройки» → «Войти заново»."
+    ],
+    "changes_en": [
+      "Read viewer text aloud: rewards have a new “🗣 Read viewer text aloud” checkbox — the bot reads what the viewer wrote with a Windows voice (after the reward’s sound or video). No internet needed.",
+      "Links are read as “link”, swear words become a “beep”, long text is trimmed; you can add your own banned words. Voice, speed and volume are in “Settings” → “Reading viewer text aloud”, with a “Read aloud” button to test.",
+      "“Bot rewards only while live”: when the stream ends, the bot pauses its rewards on Twitch and unpauses them when you go live. Rewards you paused yourself are left alone.",
+      "A “📍 Marker” button in the dock while live adds a stream marker — handy for finding moments for clips. Markers appear in the event feed and the stream summary.",
+      "The stream summary shows the most redeemed rewards and who spent the most points; “Stats” shows the same top for all stored history.",
+      "Shoutout for raiders: a “📣 Shoutout” button next to a raid in the dock feed shows the raider’s channel card with a Follow button in your chat. The “Shoutout raiders automatically” checkbox in “Settings” does it by itself 5 seconds after a raid.",
+      "Markers and shoutouts need new permissions from Twitch: “Settings” → “Sign in again”."
+    ]
+  },
+  {
     "version": "1.6.0",
     "date": "2026-11-16",
     "changes": [

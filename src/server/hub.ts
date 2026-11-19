@@ -22,6 +22,8 @@ export interface OverlayView {
   maxHeightPct: number;
   masterVolume: number; // 0..100
   maxDurationMs: number;
+  /** Громкость озвучки, % (1.7.0). */
+  ttsVolume?: number;
   /** Язык служебного текста overlay ('ru' | 'en'). */
   lang: string;
 }
@@ -189,6 +191,7 @@ export class Hub implements OverlayTransport {
         id: item.id, visual: item.visual, audio: item.audio, fallbackAudio: item.fallbackAudio ?? null, caption: item.caption, chromaKey: !!item.chromaKey,
         volume: Math.max(0, Math.min(1, item.volume * (view.masterVolume / 100))),
         durationMs: effectiveDurationMs, maxDurationMs: view.maxDurationMs,
+        tts: item.tts ? { url: item.tts.url, ms: item.tts.ms, volume: Math.max(0, Math.min(1, (view.ttsVolume ?? 100) / 100 * (view.masterVolume / 100))) } : null,
       },
     };
     for (const id of ids) { const c = this.overlays.get(id); if (c) this.send(c.ws, msg); }

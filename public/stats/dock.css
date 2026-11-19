@@ -27,6 +27,10 @@ header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .health.h-good { background: rgba(61, 214, 140, .15); color: var(--good); }
 .health.h-warn { background: rgba(255, 181, 71, .15); color: var(--warn); }
 .health.h-bad { background: rgba(255, 92, 92, .18); color: var(--bad); }
+.marker-btn { margin-left: auto; background: var(--tile); border: 0; color: var(--text); font-size: 12px; cursor: pointer; padding: 3px 8px; border-radius: 4px; }
+.marker-btn:hover { background: var(--tile-hi); }
+.marker-btn[hidden] { display: none; }
+.marker-btn:not([hidden]) + .gear { margin-left: 0; }
 .gear { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 16px; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
 .gear:hover { color: var(--text); background: var(--tile); }
 
@@ -122,3 +126,11 @@ li.f-redeem .ic { color: #b58cff; }
 .delta.down { color: var(--bad); }
 .sum-names { margin-top: 6px; font-size: 12px; line-height: 1.4; word-break: break-word; }
 .sum-hint { margin-top: 6px; color: var(--muted); font-size: 11px; }
+/* 1.7.0: всплывающее сообщение (метка), топ в итогах */
+.toast { position: fixed; left: 8px; right: 8px; top: 8px; z-index: 5; padding: 8px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; background: var(--tile-hi); color: var(--text); box-shadow: 0 4px 14px rgba(0, 0, 0, .5); }
+.toast.ok { border-left: 3px solid var(--good); }
+.toast.bad { border-left: 3px solid var(--bad); }
+.toast[hidden] { display: none; }
+li.f-marker .ic { color: #5ab0ff; }
+.qbtn.so-btn { font-size: 11px; padding: 1px 6px; }
+.so-done { color: var(--good); font-size: 11px; flex: none; }

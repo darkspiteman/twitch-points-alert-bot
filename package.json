@@ -1,6 +1,6 @@
 {
   "name": "twitch-alert-bot",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Локальный бот оповещений о наградах за баллы канала Twitch для OBS и Streamlabs Desktop (замена Sound Alerts)",
   "private": true,
   "type": "module",

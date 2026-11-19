@@ -64,7 +64,14 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
   }));
 
   // Статистика стрима: снимок и всё для настройки дока и overlay.
-  add('GET', '/api/stats/history', () => ({ summaries: app.stats.history(60) }));
+  add('GET', '/api/stats/history', () => ({ summaries: app.stats.history(60), top: app.db.redemptionTop(10), retentionDays: app.db.getSettings().historyRetentionDays }));
+  add('POST', '/api/stats/shoutout', async (_q, _r, _p, body) => {
+    const b = (body ?? {}) as { uid?: string; name?: string };
+    try { await app.shoutout(String(b.uid ?? ''), String(b.name ?? '').slice(0, 50)); return { ok: true }; } catch (e) { throw new HttpError(400, (e as Error).message); }
+  });
+  add('POST', '/api/stats/marker', async () => {
+    try { return await app.createMarker(); } catch (e) { throw new HttpError(400, (e as Error).message); }
+  });
   add('POST', '/api/stats/history/:id/delete', (_q, _r, p) => {
     const deleted = app.db.deleteStreamSummary(p.id);
     app.stats.historyChanged();
@@ -135,6 +142,8 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       app.journal('info', 'settings', note);
     }
     if (ok.obsWsPassword !== undefined || ok.obsWsPort !== undefined || ok.streamApp !== undefined || ok.obsConfigDir !== undefined) app.stats.syncObs(true);
+    // «Награды только в эфире» включили или выключили — применить сразу.
+    if (ok.rewardsOnlyLive !== undefined) void app.queueRewardsLive(null);
     if (Object.keys(ok).some((k) => k.startsWith('statsOverlay')) || ok.language !== undefined) app.hub.broadcastStats(app.statsPayload());
     if (ok.klipyApiKey !== undefined || ok.freesoundApiKey !== undefined) {
       app.finder.registerKeys();
@@ -163,7 +172,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     app.db.insertLocalReward(id, title, 0);
     return { id };
   });
-  add('POST', '/api/rewards/:id', (_q, _r, p, body) => {
+  add('POST', '/api/rewards/:id', async (_q, _r, p, body) => {
     const r = app.db.getReward(p.id);
     if (!r) throw new HttpError(404, 'Награда не найдена');
     const b = (body ?? {}) as Record<string, unknown>;
@@ -175,7 +184,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       cfg[k] = Math.round(v);
     };
     int('volume', 0, 100); int('duration_ms', 0, 3600000); int('delay_ms', 0, 60000); int('cooldown_sec', 0, 86400);
-    for (const k of ['bot_enabled', 'show_caption', 'chroma_key']) if (b[k] !== undefined) cfg[k] = b[k] ? 1 : 0;
+    for (const k of ['bot_enabled', 'show_caption', 'chroma_key', 'tts']) if (b[k] !== undefined) cfg[k] = b[k] ? 1 : 0;
     if (b.play_mode !== undefined) {
       if (b.play_mode !== 'video' && b.play_mode !== 'audio') throw new HttpError(400, 'Неверный режим воспроизведения');
       cfg.play_mode = b.play_mode;
@@ -190,10 +199,25 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       cfg[k] = m.id;
     }
     const updated = app.db.updateRewardConfig(p.id, cfg);
+    // Озвучка: награде бота включаем в Twitch «Требовать ввод текста», чтобы зритель мог написать текст.
+    if (cfg.tts === 1 && r.manageable) {
+      let raw: { is_user_input_required?: boolean } = {};
+      try { raw = JSON.parse(r.raw || '{}'); } catch { /* */ }
+      if (!raw.is_user_input_required) {
+        await app.updateOwnReward(r.id, { is_user_input_required: true }).catch((e) => app.journal('warn', 'tts', `«${r.title}»: не удалось включить ввод текста в Twitch: ${(e as Error).message}`));
+      }
+    }
     if (cfg.bot_enabled === 1 && !r.bot_enabled && !r.manageable && !r.id.startsWith('local-') && app.db.getSettings().mode === 'active') {
       app.journal('warn', 'migration', `Награда «${r.title}» включена в боте. Если Sound Alerts всё ещё обрабатывает её — оповещение прозвучит дважды. Уберите источник Sound Alerts из OBS (или Streamlabs).`);
     }
     return updated;
+  });
+  add('GET', '/api/tts/voices', async () => ({ available: app.tts.available, voices: await app.tts.voices() }));
+  add('POST', '/api/tts/test', (_q, _r, _p, body) => {
+    const text = String((body as { text?: string } | null)?.text ?? '').slice(0, 500);
+    const r = app.testTts(text);
+    if (!r.ok) throw new HttpError(400, r.error);
+    return r;
   });
   add('POST', '/api/rewards/:id/test', (_q, _r, p) => {
     const r = app.router.test(p.id);
@@ -415,6 +439,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       if (url.pathname === '/panel') { res.writeHead(302, { Location: '/panel/' }); res.end(); return; }
       if (url.pathname.startsWith('/panel/')) return serveStatic(res, path.join(PUBLIC_DIR, 'panel'), url.pathname.slice('/panel/'.length) || 'index.html', req);
       if (url.pathname.startsWith('/media/')) return serveMedia(app, req, res, url.pathname.slice('/media/'.length));
+      if (url.pathname.startsWith('/tts/')) return serveTts(app, res, url.pathname.slice('/tts/'.length));
       if (url.pathname === '/favicon.ico') return serveStatic(res, path.join(PUBLIC_DIR, 'panel'), 'icon.svg', req);
       throw new HttpError(404, 'Страница не найдена');
     } catch (e) {
@@ -526,6 +551,16 @@ function serveMedia(app: App, req: IncomingMessage, res: ServerResponse, idRaw: 
   res.writeHead(200, { ...headers, 'Content-Length': size });
   if (req.method === 'HEAD') { res.end(); return; }
   fs.createReadStream(file).pipe(res);
+}
+
+/** Готовая озвучка (data\tts\<16 hex>.wav). */
+function serveTts(app: App, res: ServerResponse, name: string): void {
+  if (!/^[a-f0-9]{16}\.wav$/.test(name)) throw new HttpError(404, 'Файл не найден');
+  const file = path.join(app.opts.paths.dataDir, 'tts', name);
+  if (!fs.existsSync(file)) throw new HttpError(404, 'Файл не найден');
+  const data = fs.readFileSync(file);
+  res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': data.length, 'Cache-Control': 'no-cache' });
+  res.end(data);
 }
 
 /** Запуск выбранной программы для стрима (OBS Studio или Streamlabs Desktop), если она ещё не запущена. */

@@ -7,6 +7,7 @@ import type { EventSubMessage } from './twitch/eventsub.ts';
 import type { HelixClient } from './twitch/helix.ts';
 import type { ScopedLogger } from './logger.ts';
 import { tr, effectiveLang } from './i18n.ts';
+import { ttsText } from './tts.ts';
 
 export const REDEMPTION_TYPE = 'channel.channel_points_custom_reward_redemption.add';
 export const REDEMPTION_VERSION = '1';
@@ -197,7 +198,13 @@ export class RedemptionRouter extends EventEmitter {
 
   private buildItem(reward: RewardRow, ctx: { id: string; userName: string; userInput: string; source: PlayItem['source'] }): { item: PlayItem } | { error: string } {
     const s = this.d.db.getSettings();
-    if (!reward.media_id && !reward.video_id && !reward.sound_id) return { error: 'Для награды не выбран медиафайл' };
+    // Озвучка текста зрителя (у теста — пример текста).
+    const input = ctx.userInput.trim() || (ctx.source === 'test' ? this.t('Это проверка озвучки текста зрителя') : '');
+    const speech = reward.tts === 1 && input
+      ? ttsText(ctx.userName, input, { template: s.ttsTemplate, maxChars: s.ttsMaxChars, filter: s.ttsFilter, bannedWords: s.ttsBannedWords })
+      : '';
+    const noMedia = !reward.media_id && !reward.video_id && !reward.sound_id;
+    if (noMedia && !speech) return { error: reward.tts === 1 ? 'Зритель не написал текст для озвучки, а медиафайл для награды не выбран' : 'Для награды не выбран медиафайл' };
     const load = (id: string | null, label: string): { ref: MediaRef | null; err: string | null } => {
       if (!id) return { ref: null, err: null };
       const m = this.d.db.getMedia(id);
@@ -227,7 +234,8 @@ export class RedemptionRouter extends EventEmitter {
     if (!visual) {
       audio = (main.ref?.kind === 'audio' ? main.ref : null) ?? extra.ref ?? asAudio(main.ref) ?? asAudio(video.ref);
     }
-    if (!visual && !audio) return { error: main.err ?? video.err ?? extra.err ?? 'Нет подходящего файла для выбранного режима' };
+    if (!visual && !audio && !speech) return { error: main.err ?? video.err ?? extra.err ?? 'Нет подходящего файла для выбранного режима' };
+    if (!visual && !audio && !noMedia) this.d.journal('warn', 'media', `«${reward.title}»: ${main.err ?? video.err ?? extra.err ?? 'файл недоступен'} — только озвучка`);
     // Онлайн-медиа может не загрузиться (нет интернета, сбой сервиса) — тогда сыграет локальный звук награды.
     const localAudio = (r: MediaRef | null) => (r && !r.remote && r.kind === 'audio' ? r : null);
     const fallbackAudio = visual?.remote || audio?.remote
@@ -242,7 +250,7 @@ export class RedemptionRouter extends EventEmitter {
         id: ctx.id, redemptionId: ctx.source === 'test' ? null : ctx.id, rewardId: reward.id, rewardTitle: reward.title, userName: ctx.userName,
         userInput: ctx.userInput, visual, audio, volume: Math.max(0, Math.min(100, reward.volume)) / 100, durationMs: reward.duration_ms,
         delayMs: reward.delay_ms, caption: caption || null, chromaKey: reward.chroma_key === 1 && visual?.kind === 'video' && !visual.remote,
-        fallbackAudio, source: ctx.source, createdAt: Date.now(),
+        fallbackAudio, ttsText: speech || null, source: ctx.source, createdAt: Date.now(),
       },
     };
   }

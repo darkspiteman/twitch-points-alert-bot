@@ -188,9 +188,28 @@
       }
       finish(state, text || 'ошибка воспроизведения', false);
     };
+    // Озвучка текста зрителя (1.7.0): после звука/видео награды; если у награды только картинка или ничего — сразу.
+    var ttsStarted = false;
+    var startTts = function () {
+      if (ttsStarted || state.done) return;
+      ttsStarted = true;
+      state.media.forEach(function (m) { if (m.tagName === 'AUDIO') { try { m.pause(); } catch (e) { /* */ } } });
+      var t = new Audio();
+      t.src = item.tts.url;
+      t.volume = item.tts.volume;
+      t.muted = !audioUnlocked;
+      t.addEventListener('playing', function () { started = true; });
+      t.addEventListener('ended', function () { finish(state, null, false); });
+      t.addEventListener('error', function () { finish(state, null, false); }); // без озвучки оповещение всё равно засчитано
+      state.media.push(t);
+      var p = t.play();
+      if (p && p.catch) p.catch(function () { finish(state, null, false); });
+      state.timers.push(setTimeout(function () { finish(state, null, false); }, (item.tts.ms || 30000) + 5000));
+    };
+    var mainDone = function () { if (item.tts) startTts(); else finish(state, null, false); };
     var oneEnded = function () {
       state.waiting--;
-      if (state.waiting <= 0 && !(item.durationMs > 0)) finish(state, null, false);
+      if (state.waiting <= 0 && !(item.durationMs > 0)) mainDone();
     };
 
     if (item.visual) {
@@ -256,10 +275,12 @@
     });
 
     // Фиксированная длительность (для картинок/GIF или если задана в настройках награды).
-    if (item.durationMs > 0) state.timers.push(setTimeout(function () { finish(state, null, false); }, item.durationMs));
-    else if (state.media.length === 0) state.timers.push(setTimeout(function () { finish(state, null, false); }, 5000));
-    // Жёсткий предел длительности.
-    state.timers.push(setTimeout(function () { finish(state, null, false); }, item.maxDurationMs || 300000));
+    var hasSound = state.media.length > 0;
+    if (item.tts && !hasSound) startTts(); // картинка (или ничего) + озвучка: картинка видна, пока читается текст
+    else if (item.durationMs > 0) state.timers.push(setTimeout(mainDone, item.durationMs));
+    else if (!hasSound) state.timers.push(setTimeout(mainDone, 5000));
+    // Жёсткий предел длительности (озвучка — сверх него).
+    state.timers.push(setTimeout(function () { if (!ttsStarted) mainDone(); }, item.maxDurationMs || 300000));
     // Если медиа не начало играть за 10 с — считаем ошибкой (повреждённый/зависший файл).
     if (state.media.length) state.timers.push(setTimeout(function () { if (!started && !state.done) fail('файл не начал воспроизводиться за 10 секунд'); }, 10000));
   }

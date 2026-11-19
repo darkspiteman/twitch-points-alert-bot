@@ -164,6 +164,17 @@ export class HelixClient {
   }
 
   /** Кто сейчас в чате (право moderator:read:chatters). Не больше maxPages × 1000 имён. */
+  /** Метка в записи трансляции (нужен channel:manage:broadcast; только в эфире). */
+  async createStreamMarker(userId: string, description: string): Promise<{ id: string; position_seconds: number }> {
+    const r = await this.request<{ data: Array<{ id: string; position_seconds: number }> }>('POST', '/streams/markers', undefined, { user_id: userId, description: description.slice(0, 140) });
+    return r.data[0];
+  }
+
+  /** Шаутаут (нужен moderator:manage:shoutouts). Без повторов при 429: это не перегрузка, а пауза Twitch между шаутаутами. */
+  async sendShoutout(fromId: string, toId: string): Promise<void> {
+    await this.request<void>('POST', '/chat/shoutouts', { from_broadcaster_id: fromId, to_broadcaster_id: toId, moderator_id: fromId }, undefined, 3);
+  }
+
   async getChatters(broadcasterId: string, moderatorId: string, maxPages = 3): Promise<{ total: number; users: Array<{ login: string; name: string }> }> {
     const users: Array<{ login: string; name: string }> = [];
     let total = 0;

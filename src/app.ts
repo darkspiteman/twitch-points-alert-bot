@@ -1,3 +1,5 @@
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { Db } from './db.ts';
 import { Logger, type ScopedLogger } from './logger.ts';
@@ -18,7 +20,9 @@ import { Updater } from './update.ts';
 import { writeLoader } from './overlay-loader.ts';
 import type { Transport } from './net/safe-download.ts';
 import { type Lang, effectiveLang, localize, tr } from './i18n.ts';
-import { StreamStats, STATS_SCOPES, STATS_EVENTS, STATS_EVENT_TYPES, type StreamSummary } from './stats.ts';
+import { StreamStats, STATS_SCOPES, STATS_EVENTS, STATS_EVENT_TYPES, SCOPE_MARKERS, SCOPE_SHOUTOUTS, type StreamSummary } from './stats.ts';
+import { TtsEngine, wavDurationMs, ttsText as ttsTextFn, type RunFn } from './tts.ts';
+import type { PlayItem } from './queue.ts';
 import { readObsWsConfig, type ObsWsConfig } from './obs-ws.ts';
 import { writeStatsLoaders, type StatsLoaders } from './overlay-loader.ts';
 
@@ -50,6 +54,10 @@ export interface AppOptions {
   statsIntervals?: ConstructorParameters<typeof StreamStats>[0]['intervals'];
   /** Обрыв эфира короче этого — тот же стрим (тесты ставят 0). */
   statsResumeMs?: number;
+  /** Задержка автоматического шаутаута после рейда (тесты). */
+  shoutoutDelayMs?: number;
+  /** Подмена запуска PowerShell для озвучки (тесты). */
+  ttsRun?: RunFn;
 }
 
 /**
@@ -68,6 +76,7 @@ export class App extends EventEmitter {
   readonly router: RedemptionRouter;
   readonly hub: Hub;
   readonly finder: MediaFinder;
+  readonly tts: TtsEngine;
   readonly updater: Updater;
   readonly stats: StreamStats;
   /** Файлы-загрузчики дока и overlay статистики (пусто, если записать не удалось). */
@@ -101,7 +110,7 @@ export class App extends EventEmitter {
 
     this.hub = new Hub(opts.logger.child('hub'), () => {
       const s = this.db.getSettings();
-      return { position: s.overlayPosition, maxWidthPct: s.overlayMaxWidthPct, maxHeightPct: s.overlayMaxHeightPct, masterVolume: s.masterVolume, maxDurationMs: s.maxDurationMs, lang: effectiveLang(s.language) };
+      return { position: s.overlayPosition, maxWidthPct: s.overlayMaxWidthPct, maxHeightPct: s.overlayMaxHeightPct, masterVolume: s.masterVolume, maxDurationMs: s.maxDurationMs, ttsVolume: s.ttsVolume, lang: effectiveLang(s.language) };
     }, () => [`http://127.0.0.1:${this.port}`, `http://localhost:${this.port}`]);
 
     this.finder = new MediaFinder({
@@ -114,7 +123,8 @@ export class App extends EventEmitter {
       fetchFn: opts.fetchFn, transport: opts.downloadTransport,
       onChange: (s) => this.hub.broadcastPanel({ type: 'update', update: s }),
     });
-    this.queue = new PlaybackQueue(this.hub, () => this.db.getSettings(), opts.logger.child('queue'), (item) => this.finder.prepare(item));
+    this.tts = new TtsEngine({ dir: path.join(opts.paths.dataDir, 'tts'), log: opts.logger.child('tts'), run: opts.ttsRun });
+    this.queue = new PlaybackQueue(this.hub, () => this.db.getSettings(), opts.logger.child('queue'), (item) => this.prepareItem(item));
     this.router = new RedemptionRouter({
       db: this.db, media: this.media, queue: this.queue, log: opts.logger.child('router'),
       helix: () => (this.auth.state.status === 'ok' ? this.helix : null),
@@ -167,6 +177,113 @@ export class App extends EventEmitter {
       fromFile: !s.obsWsPassword && !!file,
       fileFound: !!file,
     };
+  }
+
+  /** Перед показом: адреса онлайн-медиа и озвучка текста зрителя. */
+  private async prepareItem(item: PlayItem): Promise<PlayItem> {
+    const it = await this.finder.prepare(item);
+    if (!it.ttsText || it.tts) return it;
+    const s = this.db.getSettings();
+    try {
+      const name = await this.tts.synth(it.ttsText, s.ttsVoice, s.ttsRate);
+      return { ...it, tts: { url: `/tts/${name}`, ms: wavDurationMs(path.join(this.opts.paths.dataDir, 'tts', name)) } };
+    } catch (e) {
+      // Без озвучки: если есть звук или видео — играем их, иначе оповещение не состоится.
+      this.journal('warn', 'tts', `«${it.rewardTitle}»: ${(e as Error).message}`);
+      if (!it.visual && !it.audio) throw e;
+      return it;
+    }
+  }
+
+  // ---------------- Награды только в эфире (1.7.0) ----------------
+  private liveChain: Promise<void> = Promise.resolve();
+
+  /** Поставить в очередь: эфир начался (true), закончился (false) или узнать у Twitch (null). */
+  queueRewardsLive(live: boolean | null): Promise<void> {
+    this.liveChain = this.liveChain.then(() => this.applyRewardsLive(live)).catch((e) => this.log.warn('Награды только в эфире: ошибка', e));
+    return this.liveChain;
+  }
+
+  /**
+   * Вне эфира — награды бота на паузе в Twitch, в эфире — доступны. Бот снимает с паузы только те награды,
+   * которые сам поставил на паузу (список — meta rewards_paused_offline): ручную паузу стримера не трогает.
+   */
+  private async applyRewardsLive(live: boolean | null): Promise<void> {
+    const user = this.auth.user;
+    if (!user?.id || this.auth.state.status !== 'ok' || !this.auth.hasScope(SCOPE_MANAGE)) return;
+    const s = this.db.getSettings();
+    let mine: string[] = [];
+    try { mine = JSON.parse(this.db.getMeta('rewards_paused_offline') ?? '[]') as string[]; } catch { mine = []; }
+    if (!s.rewardsOnlyLive && !mine.length) return;
+    if (live === null) {
+      const st = await this.helix.getStream(user.id);
+      live = !!st && st.type === 'live';
+    }
+    if (s.rewardsOnlyLive && !live) {
+      let n = 0;
+      for (const r of this.db.listRewards().filter((x) => x.manageable)) {
+        let raw: { is_paused?: boolean } = {};
+        try { raw = JSON.parse(r.raw || '{}'); } catch { /* */ }
+        if (raw.is_paused || mine.includes(r.id)) continue;
+        try { await this.updateOwnReward(r.id, { is_paused: true }); mine.push(r.id); n++; } catch (e) { this.log.warn(`Пауза награды «${r.title}» не удалась`, e); }
+      }
+      if (n) this.journal('info', 'reward', `Эфира нет — награды бота на паузе в Twitch (${n})`);
+    } else if (mine.length) {
+      let n = 0;
+      for (const id of mine) {
+        if (!this.db.getReward(id)?.manageable) continue;
+        try { await this.updateOwnReward(id, { is_paused: false }); n++; } catch (e) { this.log.warn(`Снятие паузы с награды ${id} не удалось`, e); }
+      }
+      mine = [];
+      if (n) this.journal('info', 'reward', live ? `Эфир начался — награды бота снова доступны (${n})` : `Награды бота сняты с паузы (${n})`);
+    }
+    this.db.setMeta('rewards_paused_offline', JSON.stringify(mine));
+  }
+
+  /** Шаутаут каналу (после рейда): карточка канала в чате стримера (1.7.0). */
+  async shoutout(uid: string, name: string): Promise<void> {
+    const user = this.auth.user;
+    if (!user?.id || this.auth.state.status !== 'ok') throw new Error('Бот не вошёл в Twitch');
+    if (!/^\d{1,20}$/.test(uid)) throw new Error('Неизвестный канал');
+    if (!this.auth.hasScope(SCOPE_SHOUTOUTS)) throw new Error('Нет разрешения на шаутаут: «Настройки» → «Войти заново»');
+    try {
+      await this.helix.sendShoutout(user.id, uid);
+    } catch (e) {
+      if (e instanceof HelixError && e.status === 429) throw new Error('Twitch разрешает шаутаут не чаще раза в 2 минуты и одному каналу — раз в час. Попробуйте позже.');
+      if (e instanceof HelixError && e.status === 400) throw new Error('Шаутаут работает только во время эфира');
+      if (e instanceof HelixError && (e.status === 401 || e.status === 403)) throw new Error('Нет разрешения на шаутаут: «Настройки» → «Войти заново»');
+      throw e;
+    }
+    this.stats.markShoutout(uid);
+    this.journal('info', 'shoutout', `Шаутаут: ${name || uid}`);
+  }
+
+  /** Метка в записи трансляции из дока (1.7.0). */
+  async createMarker(): Promise<{ position: number }> {
+    const user = this.auth.user;
+    if (!user?.id || this.auth.state.status !== 'ok') throw new Error('Бот не вошёл в Twitch');
+    if (!this.auth.hasScope(SCOPE_MARKERS)) throw new Error('Нет разрешения ставить метки: «Настройки» → «Войти заново»');
+    try {
+      const m = await this.helix.createStreamMarker(user.id, 'Twitch Alert Bot');
+      this.stats.noteMarker(Number(m?.position_seconds) || 0);
+      return { position: Number(m?.position_seconds) || 0 };
+    } catch (e) {
+      if (e instanceof HelixError && (e.status === 404 || e.status === 400)) throw new Error('Метку можно поставить только во время эфира (и если на Twitch включено сохранение трансляций)');
+      if (e instanceof HelixError && (e.status === 401 || e.status === 403)) throw new Error('Нет разрешения ставить метки: «Настройки» → «Войти заново»');
+      throw e;
+    }
+  }
+
+  /** Проверка голоса из панели: только озвучка, без награды. */
+  testTts(text: string): { ok: true } | { ok: false; error: string } {
+    const s = this.db.getSettings();
+    const speech = ttsTextFor(this.lang, s, text);
+    if (!speech) return { ok: false, error: 'Нечего озвучивать' };
+    const r = this.queue.enqueue({
+      id: `test-${crypto.randomUUID()}`, redemptionId: null, rewardId: '', rewardTitle: tr('Проверка озвучки', this.lang), userName: tr('Тест', this.lang), userInput: text,
+      visual: null, audio: null, volume: 1, durationMs: 0, delayMs: 0, caption: null, ttsText: speech, source: 'test', createdAt: Date.now(),
+    });
+    return r.ok ? { ok: true } : { ok: false, error: r.reason };
   }
 
   /** Снимок статистики для дока и overlay (с оформлением overlay и языком). */
@@ -230,7 +347,7 @@ export class App extends EventEmitter {
 
     this.auth.on('state', () => { this.pushStatus(); this.stats.authChanged(); });
     this.auth.on('logged_in', () => {
-      this.syncRewards().catch((e) => this.log.warn('Синхронизация наград не удалась', e));
+      this.syncRewards().then(() => this.queueRewardsLive(null)).catch((e) => this.log.warn('Синхронизация наград не удалась', e));
       this.eventsub.restart();
     });
     this.auth.on('logged_out', (reason: 'expired' | 'manual') => {
@@ -241,7 +358,17 @@ export class App extends EventEmitter {
 
     this.eventsub.on('status', () => this.pushStatus());
     this.eventsub.on('notification', (msg) => {
-      if (STATS_EVENT_TYPES.has(msg.metadata?.subscription_type)) { this.stats.handleNotification(msg); return; }
+      const st = msg.metadata?.subscription_type;
+      if (st === 'stream.online' || st === 'stream.offline') this.queueRewardsLive(st === 'stream.online');
+      if (st === 'channel.raid' && this.db.getSettings().autoShoutout) {
+        const ev = (msg.payload.event ?? {}) as { from_broadcaster_user_id?: string; from_broadcaster_user_name?: string };
+        // Через несколько секунд: рейдеры успевают зайти и увидеть карточку.
+        if (ev.from_broadcaster_user_id) setTimeout(() => {
+          this.shoutout(String(ev.from_broadcaster_user_id), String(ev.from_broadcaster_user_name ?? ''))
+            .catch((e) => this.journal('warn', 'shoutout', `Шаутаут ${ev.from_broadcaster_user_name ?? ''}: ${(e as Error).message}`));
+        }, this.opts.shoutoutDelayMs ?? 5000).unref();
+      }
+      if (STATS_EVENT_TYPES.has(st)) { this.stats.handleNotification(msg); return; }
       if (msg.metadata?.subscription_type === 'channel.channel_points_custom_reward_redemption.add') {
         const ev = (msg.payload.event ?? {}) as { id?: string; user_name?: string; user_login?: string; reward?: { title?: string } };
         // Повторная доставка того же погашения в ленту не попадает.
@@ -352,7 +479,8 @@ export class App extends EventEmitter {
     } catch (e) { this.log.warn('Проверка медиафайлов не удалась', e); }
     const s = this.db.getSettings();
     this.db.cleanup(s.historyRetentionDays);
-    this.cleanupTimer = setInterval(() => { try { this.db.cleanup(this.db.getSettings().historyRetentionDays); } catch { /* */ } }, 6 * 3600_000);
+    this.tts.cleanup();
+    this.cleanupTimer = setInterval(() => { try { this.db.cleanup(this.db.getSettings().historyRetentionDays); } catch { /* */ } this.tts.cleanup(); }, 6 * 3600_000);
     this.cleanupTimer.unref();
     this.journal('info', 'startup', `Бот запущен (версия ${APP_VERSION})`);
     if (!this.opts.noAutoUpdateCheck) this.updater.startAuto(() => this.db.getSettings().autoUpdateCheck);
@@ -406,7 +534,7 @@ export class App extends EventEmitter {
     this.db.upsertTwitchReward({ id: created.id, title: created.title, cost: created.cost, prompt: created.prompt, manageable: true, is_enabled: paused.is_enabled && !paused.is_paused, background_color: created.background_color, raw: paused });
     // Переносим настройки медиа из исходной награды; включена в боте (на Twitch она на паузе).
     this.db.updateRewardConfig(created.id, {
-      bot_enabled: 1, media_id: src.media_id, sound_id: src.sound_id, video_id: src.video_id, play_mode: src.play_mode, chroma_key: src.chroma_key, volume: src.volume, duration_ms: src.duration_ms, delay_ms: src.delay_ms,
+      bot_enabled: 1, media_id: src.media_id, sound_id: src.sound_id, video_id: src.video_id, play_mode: src.play_mode, chroma_key: src.chroma_key, tts: src.tts, volume: src.volume, duration_ms: src.duration_ms, delay_ms: src.delay_ms,
       cooldown_sec: src.cooldown_sec, show_caption: src.show_caption, created_by_bot: 1,
     });
     this.journal('info', 'migration', `Создана копия награды «${src.title}» → «${created.title}» (на паузе)`);
@@ -436,7 +564,7 @@ export class App extends EventEmitter {
   }
 
   /** Изменение собственной награды бота в Twitch (название, стоимость, пауза, вкл/выкл). */
-  async updateOwnReward(rewardId: string, patch: { title?: string; cost?: number; is_paused?: boolean; is_enabled?: boolean }): Promise<void> {
+  async updateOwnReward(rewardId: string, patch: { title?: string; cost?: number; is_paused?: boolean; is_enabled?: boolean; is_user_input_required?: boolean }): Promise<void> {
     const user = this.auth.user;
     if (!user?.id) throw new Error('Не выполнен вход в Twitch');
     const r = this.db.getReward(rewardId);
@@ -447,6 +575,7 @@ export class App extends EventEmitter {
     if (patch.cost !== undefined) { const c = Number(patch.cost); if (!Number.isInteger(c) || c < 1) throw new Error('Стоимость должна быть целым числом от 1'); body.cost = c; }
     if (patch.is_paused !== undefined) body.is_paused = Boolean(patch.is_paused);
     if (patch.is_enabled !== undefined) body.is_enabled = Boolean(patch.is_enabled);
+    if (patch.is_user_input_required !== undefined) body.is_user_input_required = Boolean(patch.is_user_input_required);
     const upd = await this.helix.updateCustomReward(user.id, rewardId, body);
     this.db.upsertTwitchReward({ id: upd.id, title: upd.title, cost: upd.cost, prompt: upd.prompt, manageable: true, is_enabled: upd.is_enabled && !upd.is_paused, background_color: upd.background_color, raw: upd });
     this.hub.broadcastPanel({ type: 'invalidate', what: 'rewards' });
@@ -496,4 +625,9 @@ export class App extends EventEmitter {
     await this.hub.close();
     this.db.close();
   }
+}
+
+/** Текст для проверки голоса из панели (те же фильтры, что у зрителей). */
+function ttsTextFor(lang: Lang, s: { ttsTemplate: string; ttsMaxChars: number; ttsFilter: boolean; ttsBannedWords: string }, text: string): string {
+  return ttsTextFn(tr('Тест', lang), text, { template: s.ttsTemplate, maxChars: s.ttsMaxChars, filter: s.ttsFilter, bannedWords: s.ttsBannedWords });
 }

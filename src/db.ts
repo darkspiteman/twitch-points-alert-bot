@@ -19,6 +19,8 @@ export interface RewardRow {
   play_mode: 'video' | 'audio';
   /** Убирать зелёный фон у видео (хромакей). */
   chroma_key: number;
+  /** 1.7.0: озвучить текст зрителя голосом Windows. */
+  tts: number;
   volume: number;
   duration_ms: number;
   delay_ms: number;
@@ -113,6 +115,7 @@ export class Db {
     if (!cols.includes('video_id')) this.raw.exec('ALTER TABLE rewards ADD COLUMN video_id TEXT');
     if (!cols.includes('chroma_key')) this.raw.exec('ALTER TABLE rewards ADD COLUMN chroma_key INTEGER NOT NULL DEFAULT 0');
     if (!cols.includes('play_mode')) this.raw.exec("ALTER TABLE rewards ADD COLUMN play_mode TEXT NOT NULL DEFAULT 'video'");
+    if (!cols.includes('tts')) this.raw.exec('ALTER TABLE rewards ADD COLUMN tts INTEGER NOT NULL DEFAULT 0');
     const mcols = (this.raw.prepare('PRAGMA table_info(media)').all() as { name: string }[]).map((c) => c.name);
     if (!mcols.includes('source')) this.raw.exec("ALTER TABLE media ADD COLUMN source TEXT NOT NULL DEFAULT 'upload'");
     if (!mcols.includes('remote_ref')) this.raw.exec("ALTER TABLE media ADD COLUMN remote_ref TEXT NOT NULL DEFAULT ''");
@@ -220,6 +223,14 @@ export class Db {
     return out;
   }
 
+  /** Топ наград и зрителей по сохранённой истории погашений (1.7.0). */
+  redemptionTop(limit = 10): { since: number | null; total: number; rewards: Array<[string, number]>; users: Array<[string, number]> } {
+    const head = this.raw.prepare('SELECT MIN(received_at) AS since, COUNT(*) AS total FROM redemptions').get() as { since: number | null; total: number };
+    const rewards = (this.raw.prepare(`SELECT reward_title AS k, COUNT(*) AS n FROM redemptions WHERE reward_title <> '' GROUP BY reward_title ORDER BY n DESC, k LIMIT ?`).all(limit) as Array<{ k: string; n: number }>).map((r) => [r.k, Number(r.n)] as [string, number]);
+    const users = (this.raw.prepare(`SELECT COALESCE(NULLIF(user_name, ''), user_login) AS k, COUNT(*) AS n FROM redemptions WHERE source <> 'simulate' AND COALESCE(NULLIF(user_name, ''), user_login) <> '' GROUP BY k ORDER BY n DESC, k LIMIT ?`).all(limit) as Array<{ k: string; n: number }>).map((r) => [r.k, Number(r.n)] as [string, number]);
+    return { since: head.since ?? null, total: Number(head.total) || 0, rewards, users };
+  }
+
   deleteStreamSummary(id: string): boolean {
     return Number(this.raw.prepare('DELETE FROM stream_history WHERE id = ?').run(id).changes) > 0;
   }
@@ -249,8 +260,8 @@ export class Db {
     for (const r of all) if (!keep.has(r.id)) stmt.run(Date.now(), r.id);
   }
 
-  updateRewardConfig(id: string, cfg: Partial<Pick<RewardRow, 'bot_enabled' | 'media_id' | 'sound_id' | 'video_id' | 'play_mode' | 'chroma_key' | 'volume' | 'duration_ms' | 'delay_ms' | 'cooldown_sec' | 'show_caption' | 'created_by_bot'>>): RewardRow | undefined {
-    const allowed = ['bot_enabled', 'media_id', 'sound_id', 'video_id', 'play_mode', 'chroma_key', 'volume', 'duration_ms', 'delay_ms', 'cooldown_sec', 'show_caption', 'created_by_bot'];
+  updateRewardConfig(id: string, cfg: Partial<Pick<RewardRow, 'bot_enabled' | 'media_id' | 'sound_id' | 'video_id' | 'play_mode' | 'chroma_key' | 'tts' | 'volume' | 'duration_ms' | 'delay_ms' | 'cooldown_sec' | 'show_caption' | 'created_by_bot'>>): RewardRow | undefined {
+    const allowed = ['bot_enabled', 'media_id', 'sound_id', 'video_id', 'play_mode', 'chroma_key', 'tts', 'volume', 'duration_ms', 'delay_ms', 'cooldown_sec', 'show_caption', 'created_by_bot'];
     const keys = Object.keys(cfg).filter((k) => allowed.includes(k));
     if (keys.length) {
       const sql = `UPDATE rewards SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`;

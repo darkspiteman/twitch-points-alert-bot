@@ -153,3 +153,11 @@ DNS rebinding), изменяющие запросы требуют заголо�
 - Текущий стрим — `SessionState` (meta `stats_session`): начало, счётчики, имена, уникальные зрители чата. Конец эфира → `stream_history` (итоги).
 - Зрители чата — `chatter_history` (login, сколько стримов был, last_session). «Впервые» — только если `chatters_since` ≤ начала стрима.
 - В payload `/ws/stats` есть `queue` (снимок очереди) — док показывает очередь и вызывает `/api/queue/*`.
+
+### 1.7.0
+
+- Озвучка — `src/tts.ts` (`TtsEngine`: PowerShell 5.1 + WinRT `Windows.Media.SpeechSynthesis`, текст через stdin; `ttsText()` — фильтры; слова фильтра — `src/tts-words.ts`).
+  Роутер кладёт в `PlayItem.ttsText` очищенный текст, `App.prepareItem` (хук `prepare` очереди) создаёт `data\tts\<hex>.wav` → `PlayItem.tts { url, ms }`,
+  overlay играет озвучку после звука/видео (с картинкой — сразу). Старые файлы удаляются раз в 6 часов.
+- Награды только в эфире — `App.applyRewardsLive` (EventSub stream.online/offline, при входе — Helix streams). Свои паузы — meta `rewards_paused_offline`.
+- Метки — `POST /api/stats/marker` → Helix `/streams/markers`; `StreamStats.noteMarker`. Топ — `SessionState.byReward/byUser`, `Db.redemptionTop`.

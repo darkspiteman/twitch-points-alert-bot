@@ -26,6 +26,10 @@ export interface PlayItem {
   chromaKey?: boolean;
   /** Запасной звук, если онлайн-медиа не загрузилось. */
   fallbackAudio?: MediaRef | null;
+  /** 1.7.0: что озвучить голосом Windows (уже очищено фильтрами); файл создаётся перед показом. */
+  ttsText?: string | null;
+  /** Готовая озвучка: файл и его длительность. Играет после звука/видео награды (с картинкой — сразу). */
+  tts?: { url: string; ms: number } | null;
   source: 'eventsub' | 'recovery' | 'test' | 'simulate';
   createdAt: number;
 }
@@ -178,7 +182,7 @@ export class PlaybackQueue extends EventEmitter {
       const ids = this.transport.overlayIds();
       if (ids.length === 0) return this.pump();
       this.items.shift();
-      if (this.prepare && (item.visual?.remote || item.audio?.remote)) {
+      if (this.prepare && (item.visual?.remote || item.audio?.remote || (item.ttsText && !item.tts))) {
         this.busy = true;
         this.preparing = item;
         this.prepare(item).then(
@@ -201,7 +205,7 @@ export class PlaybackQueue extends EventEmitter {
     const ids = this.transport.overlayIds();
     if (ids.length === 0) { this.items.unshift(item); this.changed(); return this.pump(); }
     const duration = this.effectiveDuration(item, s);
-    const hardLimit = (duration > 0 ? duration : s.maxDurationMs) + 5000;
+    const hardLimit = (duration > 0 ? duration : s.maxDurationMs) + (item.tts ? item.tts.ms : 0) + 5000;
     const timer = setTimeout(() => {
       this.log.warn(`Overlay не сообщил об окончании «${item.rewardTitle}» за ${hardLimit} мс — переходим к следующему`);
       this.transport.stop(item.id);

@@ -100,7 +100,7 @@ const SERVER_FRAGMENTS = new Set([
   'Браузер не может', 'Браузер панели тоже', 'Файл', 'Идея: ',
 ]);
 /** Файлы без сообщений для панели: технические, HTML загрузчика, сам словарь. */
-const SERVER_SKIP_FILES = new Set(['i18n.ts', 'logger.ts', 'secure-store.ts', 'migrate.ts', 'overlay-loader.ts', 'main.ts']);
+const SERVER_SKIP_FILES = new Set(['i18n.ts', 'logger.ts', 'secure-store.ts', 'migrate.ts', 'overlay-loader.ts', 'main.ts', 'tts-words.ts']);
 
 test('все русские сообщения сервера есть в английском словаре (кроме технического лога)', () => {
   const files: string[] = [];

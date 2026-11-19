@@ -20,8 +20,12 @@ import { ObsClient, type ObsMic, type ObsSample, type ObsState, type ObsWsConfig
 export const SCOPE_FOLLOWERS = 'moderator:read:followers';
 export const SCOPE_SUBS = 'channel:read:subscriptions';
 export const SCOPE_CHATTERS = 'moderator:read:chatters';
+/** 1.7.0: метки в записи трансляции. */
+export const SCOPE_MARKERS = 'channel:manage:broadcast';
+/** 1.7.0: шаутаут рейдеру. */
+export const SCOPE_SHOUTOUTS = 'moderator:manage:shoutouts';
 /** Права для статистики: запрашиваются при входе, но не обязательны (без них бот работает, а статистика неполная). */
-export const STATS_SCOPES = [SCOPE_FOLLOWERS, SCOPE_SUBS, SCOPE_CHATTERS];
+export const STATS_SCOPES = [SCOPE_FOLLOWERS, SCOPE_SUBS, SCOPE_CHATTERS, SCOPE_MARKERS, SCOPE_SHOUTOUTS];
 
 /** Подписки EventSub для статистики (создаются вместе с подпиской на награды, ошибки не мешают наградам). */
 export const STATS_EVENTS: Array<{ type: string; version: string; condition: (uid: string) => Record<string, string>; scope?: string }> = [
@@ -44,9 +48,9 @@ export const KNOWN_BOTS = new Set([
 
 export const OVERLAY_FIELDS = ['session', 'viewers', 'chatters', 'followers', 'followersSession', 'subs', 'subPoints', 'bitrate', 'resolution', 'dropped', 'health'] as const;
 
-export type FeedKind = 'follow' | 'sub' | 'resub' | 'gift' | 'raid' | 'join' | 'redeem';
+export type FeedKind = 'follow' | 'sub' | 'resub' | 'gift' | 'raid' | 'join' | 'redeem' | 'marker';
 /** Событие ленты. first — зритель впервые на канале; text — название награды. */
-export interface FeedItem { kind: FeedKind; name: string; at: number; n?: number; tier?: string; first?: boolean; text?: string }
+export interface FeedItem { kind: FeedKind; name: string; at: number; n?: number; tier?: string; first?: boolean; text?: string; uid?: string; so?: boolean }
 
 /** Итоги одного стрима (сохраняются в базе при окончании эфира). */
 export interface StreamSummary {
@@ -69,6 +73,11 @@ export interface StreamSummary {
   newChatters: number;
   newChatterNames: string[];
   redemptions: number;
+  /** 1.7.0: метки в записи (секунды от начала трансляции). */
+  markers?: number[];
+  /** 1.7.0: какие награды брали чаще всего и кто больше всех тратил баллы (до 5). */
+  topRewards?: Array<[string, number]>;
+  topUsers?: Array<[string, number]>;
 }
 
 /** Хранилище статистики (база бота). Без него бот не помнит зрителей и итоги стримов. */
@@ -157,6 +166,9 @@ interface SessionState {
   newChatters: string[];
   chattersKnown: boolean;
   redemptions: number;
+  byReward: Record<string, number>;
+  byUser: Record<string, number>;
+  markers: number[];
   title: string;
   game: string;
 }
@@ -165,7 +177,7 @@ function emptySession(): SessionState {
   return {
     id: '', streamId: '', startedAt: 0, startEstimated: false, endedAt: 0, lastAt: 0, peakViewers: 0, viewerSum: 0, viewerSamples: 0,
     followersSession: 0, subsSession: 0, resubs: 0, followerNames: [], subNames: [], gifts: 0, raids: [],
-    chatters: [], newChatters: [], chattersKnown: false, redemptions: 0, title: '', game: '',
+    chatters: [], newChatters: [], chattersKnown: false, redemptions: 0, byReward: {}, byUser: {}, markers: [], title: '', game: '',
   };
 }
 
@@ -392,6 +404,9 @@ export class StreamStats extends EventEmitter {
       subs: s.subsSession, resubs: s.resubs, subNames: s.subNames.slice(0, NAMES_MAX), gifts: s.gifts, raids: s.raids.slice(0, 50),
       chatters: s.chattersKnown ? s.chatters.length : null, newChatters: s.newChatters.length, newChatterNames: s.newChatters.slice(0, NAMES_MAX),
       redemptions: s.redemptions,
+      markers: s.markers.slice(0, 100),
+      topRewards: top(s.byReward, 5),
+      topUsers: top(s.byUser, 5),
     };
   }
 
@@ -402,6 +417,8 @@ export class StreamStats extends EventEmitter {
   /** Награда за баллы канала (любая, не только бота) — в ленту и в итоги стрима. */
   noteRedemption(userName: string, rewardTitle: string): void {
     this.session.redemptions++;
+    bump(this.session.byReward, rewardTitle);
+    bump(this.session.byUser, userName);
     this.addFeed({ kind: 'redeem', name: userName, at: Date.now(), text: rewardTitle });
     this.saveSession();
     this.changed();
@@ -409,6 +426,20 @@ export class StreamStats extends EventEmitter {
 
   /** История стримов изменилась (удалили запись в панели). */
   historyChanged(): void { this.summariesCache = null; this.changed(); }
+
+  /** Шаутаут рейдеру сделан — кнопка в ленте сменится на «✓». */
+  markShoutout(uid: string): void {
+    for (const f of this.feed) if (f.kind === 'raid' && f.uid === uid) f.so = true;
+    this.changed();
+  }
+
+  /** Метка в записи поставлена (секунды от начала трансляции). */
+  noteMarker(positionSec: number): void {
+    if (this.session.markers.length < 100) this.session.markers.push(positionSec);
+    this.addFeed({ kind: 'marker', name: '', at: Date.now(), n: positionSec });
+    this.saveSession();
+    this.changed();
+  }
 
   /** Итоги последних стримов (новые первыми). */
   history(limit = 30): StreamSummary[] {
@@ -575,7 +606,7 @@ export class StreamStats extends EventEmitter {
       case 'channel.raid': {
         const from = String(ev.from_broadcaster_user_name ?? '');
         if (this.session.raids.length < 50) this.session.raids.push({ name: from, viewers: Number(ev.viewers) || 0 });
-        this.addFeed({ kind: 'raid', name: from, at: now, n: Number(ev.viewers) || 0 });
+        this.addFeed({ kind: 'raid', name: from, at: now, n: Number(ev.viewers) || 0, uid: String(ev.from_broadcaster_user_id ?? '') || undefined });
         break;
       }
       case 'stream.online': {
@@ -737,6 +768,17 @@ export class StreamStats extends EventEmitter {
       },
     };
   }
+}
+
+/** Счётчик в словаре (не больше 500 разных ключей — память под контролем). */
+function bump(map: Record<string, number>, key: string): void {
+  if (!key) return;
+  if (map[key] === undefined && Object.keys(map).length >= 500) return;
+  map[key] = (map[key] ?? 0) + 1;
+}
+
+function top(map: Record<string, number>, n: number): Array<[string, number]> {
+  return Object.entries(map ?? {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n);
 }
 
 function newId(): string { return crypto.randomBytes(8).toString('hex'); }

@@ -119,6 +119,21 @@ export interface Settings {
   statsOverlayLabels: boolean;
   /** Масштаб overlay статистики, %. */
   statsOverlayScale: number;
+  /** 1.7.0: озвучка текста зрителя — голос Windows (id; пусто — первый русский), скорость %, громкость %. */
+  ttsVoice: string;
+  ttsRate: number;
+  ttsVolume: number;
+  /** Что читать: {user} — ник, {text} — текст зрителя. */
+  ttsTemplate: string;
+  ttsMaxChars: number;
+  /** Заменять мат на «пи-ип». */
+  ttsFilter: boolean;
+  /** Свои запрещённые слова через запятую. */
+  ttsBannedWords: string;
+  /** 1.7.0: награды бота доступны только во время эфира (вне эфира — на паузе в Twitch). */
+  rewardsOnlyLive: boolean;
+  /** 1.7.0: шаутаут рейдеру автоматически. */
+  autoShoutout: boolean;
 }
 
 export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey', 'obsWsPassword'] as const;
@@ -178,6 +193,15 @@ export function defaultSettings(): Settings {
     statsOverlayStyle: 'dark',
     statsOverlayLabels: true,
     statsOverlayScale: 100,
+    ttsVoice: '',
+    ttsRate: 100,
+    ttsVolume: 100,
+    ttsTemplate: '{user} пишет: {text}',
+    ttsMaxChars: 200,
+    ttsFilter: true,
+    ttsBannedWords: '',
+    rewardsOnlyLive: false,
+    autoShoutout: false,
   };
 }
 
@@ -208,6 +232,25 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
         case 'historyRetentionDays': num(k, 1, 3650); break;
         case 'obsWsPort': if (Number(patch[k]) !== 0) num(k, 1024, 65535); else out[k] = 0; break;
         case 'statsOverlayScale': num(k, 50, 300); break;
+        case 'ttsRate': num(k, 50, 300); break;
+        case 'ttsVolume': num(k, 0, 100); break;
+        case 'ttsMaxChars': num(k, 20, 500); break;
+        case 'ttsVoice': {
+          const v = String(patch[k] ?? '');
+          if (v.length > 200 || !/^[\w\\\-. {}]*$/.test(v)) throw new Error('Неверный голос озвучки');
+          out[k] = v; break;
+        }
+        case 'ttsTemplate': {
+          const v = String(patch[k] ?? '').trim();
+          if (v.length > 100) throw new Error('Шаблон озвучки слишком длинный');
+          if (!v.includes('{text}')) throw new Error('В шаблоне озвучки должно быть {text} — текст зрителя');
+          out[k] = v; break;
+        }
+        case 'ttsBannedWords': {
+          const v = String(patch[k] ?? '');
+          if (v.length > 2000) throw new Error('Список запрещённых слов слишком длинный');
+          out[k] = v; break;
+        }
         case 'obsWsPassword': {
           const v = String(patch[k] ?? '');
           if (v.length > 200 || /[\r\n]/.test(v)) throw new Error('Пароль OBS WebSocket выглядит неверно');
@@ -232,7 +275,7 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (!allowed.includes(String(patch[k]))) throw new Error('Неверное положение overlay');
           out[k] = patch[k]; break;
         }
-        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck': case 'statsOverlayLabels':
+        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck': case 'statsOverlayLabels': case 'ttsFilter': case 'rewardsOnlyLive': case 'autoShoutout':
           out[k] = Boolean(patch[k]); break;
         case 'clientId': {
           const v = String(patch[k] ?? '').trim();

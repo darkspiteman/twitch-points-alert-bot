@@ -532,6 +532,9 @@
       return h('div', { class: 'field' }, h('label', { text: label }), inp, hint ? h('span', { class: 'hint', text: hint }) : null);
     };
     var caption = h('input', { type: 'checkbox', checked: !!r.show_caption, onchange: function () { saveReward(r.id, { show_caption: caption.checked }); } });
+    var tts = h('input', { type: 'checkbox', checked: !!r.tts, onchange: function () { saveReward(r.id, { tts: tts.checked }).then(function () { load(); }); } });
+    var ttsHint = !r.tts ? '' : r.manageable || isLocal ? '' : !raw.is_user_input_required
+      ? T('Включите у этой награды на Twitch «Требовать ввод текста» — иначе зритель не сможет написать текст.') : '';
     card.appendChild(h('div', { class: 'reward-body' },
       modeSwitch,
       h('div', { class: 'field' }, h('label', { text: T('Звук (основной файл)') }), media),
@@ -542,7 +545,9 @@
       numField(T('Длительность, с'), 'duration_ms', r.duration_ms, 1000, T('0 — до конца видео/звука')),
       numField(T('Задержка перед показом, с'), 'delay_ms', r.delay_ms, 1000),
       numField(T('Антиспам: повтор от зрителя не чаще, с'), 'cooldown_sec', r.cooldown_sec, 1, T('0 — без ограничения')),
-      h('label', { class: 'check' }, caption, T('Показывать подпись'))));
+      h('label', { class: 'check' }, caption, T('Показывать подпись')),
+      h('div', null, h('label', { class: 'check', title: T('Зритель пишет текст при получении награды — бот читает его голосом Windows (после звука или видео награды)') }, tts, T('🗣 Озвучить текст зрителя')),
+        ttsHint ? h('div', { class: 'hint small muted', style: 'margin:-6px 0 6px 24px', text: ttsHint } ) : null)));
 
     var actions = h('div', { class: 'reward-actions' },
       h('button', { class: 'primary small', text: T('▶ Тест'), onclick: function () { act(post('/api/rewards/' + encodeURIComponent(r.id) + '/test'), T('Тест добавлен в очередь')); } }),
@@ -1263,6 +1268,8 @@
         settingField(T('Режим работы'), 'mode', { type: 'select', options: [['active', T('Активный — воспроизводить оповещения')], ['observe', T('Наблюдение — только записывать (для параллельной работы с Sound Alerts)')]] }),
         settingField(T('Восстанавливать пропущенные события после обрыва связи'), 'recoverMissed', { type: 'check', hint: T('Работает только для наград, созданных этим ботом (ограничение Twitch).') }),
         settingField(T('Отмечать выполненными и возвращать баллы при сбое'), 'manageRedemptionStatus', { type: 'check', hint: T('Только для наград, созданных ботом и не пропускающих очередь запросов.') }),
+        settingField(T('Шаутаут рейдеру автоматически'), 'autoShoutout', { type: 'check', hint: T('Через 5 секунд после рейда в чате появится карточка канала рейдера. Кнопка «📣 Шаутаут» у рейда в ленте дока работает и без этой галочки.') }),
+        settingField(T('Награды бота — только во время эфира'), 'rewardsOnlyLive', { type: 'check', hint: T('Когда стрим заканчивается, бот ставит свои награды на паузу в Twitch, а при начале эфира снимает. Зрители не тратят баллы, пока вас нет. Награды, которые вы поставили на паузу сами, бот не трогает.') }),
         settingField(T('Хранить историю, дней'), 'historyRetentionDays', { type: 'number', min: 1 }))));
 
     var keyField = function (label, key, hint) {
@@ -1285,6 +1292,32 @@
           h('li', { text: T('Klipy: мемы не скачиваются (правила Klipy) — во время стрима OBS или Streamlabs загружает их с сервера Klipy. Назначьте награде запасной звук на случай сбоя.') }),
           h('li', { text: T('Freesound: звуки скачиваются в медиатеку и работают без интернета. Автор и лицензия сохраняются.') }),
           h('li', { text: T('По ссылке: прямой адрес файла скачивается в медиатеку. Ссылки на этот компьютер и локальную сеть запрещены.') })))));
+
+    // Озвучка текста зрителя (1.7.0).
+    var voiceSel = h('select', { disabled: true }, h('option', { value: '', text: T('Загрузка…') }));
+    api('GET', '/api/tts/voices').then(function (r) {
+      clear(voiceSel);
+      voiceSel.appendChild(h('option', { value: '', text: T('Автоматически (русский голос)'), selected: !S.settings.ttsVoice }));
+      (r.voices || []).forEach(function (v) { voiceSel.appendChild(h('option', { value: v.id, text: v.name + ' (' + v.lang + ')', selected: S.settings.ttsVoice === v.id })); });
+      voiceSel.disabled = !r.available;
+    }, function () { /* нет связи */ });
+    voiceSel.addEventListener('change', function () { saveSetting('ttsVoice', voiceSel.value); });
+    var ttsTest = h('input', { type: 'text', value: T('Привет! Спасибо за баллы, это проверка голоса.'), maxlength: 300 });
+    var banned = h('textarea', { rows: 2, placeholder: T('слово1, слово2') });
+    banned.value = S.settings.ttsBannedWords || '';
+    banned.addEventListener('change', function () { saveSetting('ttsBannedWords', banned.value); });
+    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Озвучка текста зрителя') }),
+      h('p', { class: 'small muted', text: T('Награда с галочкой «Озвучить текст зрителя» читает вслух то, что зритель написал при получении награды. Голоса встроены в Windows, интернет не нужен.') }),
+      h('div', { class: 'form-grid' },
+        h('div', { class: 'field' }, h('label', { text: T('Голос') }), voiceSel, h('span', { class: 'hint', text: T('Ещё голоса: Параметры Windows → Время и язык → Речь → Добавить голоса') })),
+        settingField(T('Скорость, %'), 'ttsRate', { type: 'number', min: 50, max: 300 }),
+        settingField(T('Громкость, %'), 'ttsVolume', { type: 'number', min: 0, max: 100 }),
+        settingField(T('Не длиннее, символов'), 'ttsMaxChars', { type: 'number', min: 20, max: 500 })),
+      settingField(T('Что читать'), 'ttsTemplate', { hint: T('{user} — ник зрителя, {text} — его текст') }),
+      settingField(T('Заменять мат на «пи-ип»'), 'ttsFilter', { type: 'check', hint: T('Ссылки всегда читаются как «ссылка», длинные повторы букв сокращаются.') }),
+      h('div', { class: 'field' }, h('label', { text: T('Свои запрещённые слова (через запятую)') }), banned),
+      h('div', { class: 'field' }, h('label', { text: T('Проверить голос') }), h('div', { class: 'copy-field' }, ttsTest,
+        h('button', { class: 'primary', text: T('▶ Озвучить'), onclick: function () { act(post('/api/tts/test', { text: ttsTest.value }), T('Добавлено в очередь')); } })))));
 
     var autostart = h('input', { type: 'checkbox', checked: !!S.autostart, onchange: function () {
       act(post('/api/autostart', { enabled: autostart.checked }), autostart.checked ? T('Автозапуск включён') : T('Автозапуск выключен')).then(null, function () { autostart.checked = !autostart.checked; });
@@ -1380,9 +1413,31 @@
       names.join(', ') + (total > names.length ? ' ' + T('и ещё {0}', [total - names.length]) : ''));
   }
 
+  function hms(sec) {
+    sec = Math.max(0, Math.round(sec));
+    var h2 = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+    return h2 + ':' + (m < 10 ? '0' : '') + m + ':' + (x < 10 ? '0' : '') + x;
+  }
+
+  /** Топ наград и зрителей за всю сохранённую историю (1.7.0). */
+  function renderTop(box, r) {
+    var t = r.top;
+    if (!t || !t.total) return;
+    var list = function (title, rows, fmt) {
+      return h('div', null, h('h3', { class: 'small', text: title }),
+        h('ol', { class: 'small top-list' }, rows.map(function (x) { return h('li', null, fmt(x[0]), h('span', { class: 'muted', text: ' ×' + x[1] })); })));
+    };
+    box.appendChild(h('div', { class: 'top-box' },
+      h('p', { class: 'small muted', text: T('За последние {0} дн. (столько хранится история): всего получено наград — {1}.', [r.retentionDays, t.total]) }),
+      h('div', { class: 'grid cols-2' },
+        list(T('Чаще всего брали'), t.rewards, function (k) { return '«' + k + '»'; }),
+        list(T('Больше всех потратили баллов'), t.users, function (k) { return k; }))));
+  }
+
   function renderHistory(box) {
     api('GET', '/api/stats/history').then(function (r) {
       clear(box);
+      renderTop(box, r);
       var list = r.summaries || [];
       if (!list.length) { box.appendChild(h('div', { class: 'empty', text: T('Пока пусто: итоги появятся после первого стрима, во время которого был открыт док (или эта страница).') })); return; }
       var tb = h('tbody');
@@ -1399,6 +1454,9 @@
           namesRow(T('Подписки'), s.subNames, s.subNames.length),
           namesRow(T('Впервые в чате'), s.newChatterNames, s.newChatters),
           namesRow(T('Рейды'), s.raids.map(function (x) { return x.name + ' (' + x.viewers + ')'; }), s.raids.length),
+          namesRow(T('Чаще всего брали'), (s.topRewards || []).map(function (x) { return '«' + x[0] + '» ×' + x[1]; }), (s.topRewards || []).length),
+          namesRow(T('Больше всех потратили баллов'), (s.topUsers || []).map(function (x) { return x[0] + ' ×' + x[1]; }), (s.topUsers || []).length),
+          namesRow(T('Метки в записи'), (s.markers || []).map(function (sec) { return hms(sec); }), (s.markers || []).length),
           h('button', { class: 'small danger', text: T('Удалить запись'), onclick: function () {
             if (!confirm(T('Удалить итоги стрима от {0}?', [fmtDateTime(s.startedAt)]))) return;
             act(post('/api/stats/history/' + encodeURIComponent(s.id) + '/delete'), T('Удалено')).then(function () { renderHistory(box); });

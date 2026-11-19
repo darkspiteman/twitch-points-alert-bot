@@ -64,6 +64,10 @@
 
   function renderTop() {
     var st = data.stats;
+    var mk = document.getElementById('marker');
+    mk.hidden = !st.live;
+    mk.textContent = t('marker');
+    mk.title = t('markerTitle');
     var live = document.getElementById('live');
     live.className = 'live ' + (st.live ? 'on' : 'off');
     document.getElementById('live-text').textContent = st.live ? t('live') : t('offline');
@@ -129,7 +133,7 @@
     if (st.twitch !== 'ok') notes.push(['bad', t('notLogged')]);
     else if (st.missingScopes.length) {
       var names = st.missingScopes.map(function (s) {
-        return s.indexOf('followers') >= 0 ? t('s_followers') : s.indexOf('subscriptions') >= 0 ? t('s_subs') : t('s_chatters');
+        return s.indexOf('followers') >= 0 ? t('s_followers') : s.indexOf('subscriptions') >= 0 ? t('s_subs') : s.indexOf('broadcast') >= 0 ? t('s_markers') : s.indexOf('shoutouts') >= 0 ? t('s_shoutouts') : t('s_chatters');
       });
       notes.push(['warn', t('scopes', [names.join(', ')])]);
     }
@@ -206,13 +210,31 @@
       case 'raid': return t('f_raid', [S.num(f.n || 0)]);
       case 'join': return f.first ? t('f_joinFirst') : f.n > 1 ? t('f_joinN', [f.n]) : t('f_join');
       case 'redeem': return '— ' + (f.text || '');
+      case 'marker': return t('f_marker') + ' · ' + S.duration((f.n || 0) * 1000);
     }
     return '';
   }
-  var FEED_ICON = { follow: 'followers', sub: 'subs', resub: 'subs', gift: 'subPoints', raid: 'viewers', join: 'chatters', redeem: 'reward' };
+  var FEED_ICON = { follow: 'followers', sub: 'subs', resub: 'subs', gift: 'subPoints', raid: 'viewers', join: 'chatters', redeem: 'reward', marker: 'session' };
 
-  function renderLists() {
+  function shoutoutButton(f) {
+    var b = iconButton(t('so'), t('soTitle'), function () {
+      b.disabled = true;
+      fetch('/api/stats/shoutout', { method: 'POST', headers: { 'x-tab-request': '1', 'content-type': 'application/json' }, body: JSON.stringify({ uid: f.uid, name: f.name }) })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) { toast(res.ok ? t('soDone') : (res.j && res.j.error) || 'Error', res.ok); })
+        .catch(function () { toast(t('lost'), false); })
+        .then(function () { b.disabled = false; });
+    }, 'so-btn');
+    return b;
+  }
+
+  var listsSig = '';
+  function renderLists(force) {
     var st = data.stats;
+    // Перерисовка только при изменении (или раз в 30 с для «N мин назад»): иначе кнопка «Шаутаут» пропадала бы под курсором.
+    var sig = JSON.stringify([st.feed, st.chattersList, st.chatters, st.live, st.chattersTrackedSince, hidden, S.lang()]);
+    if (!force && sig === listsSig) return;
+    listsSig = sig;
     var feedBox = document.getElementById('feed-box');
     var chatBox = document.getElementById('chat-box');
     feedBox.hidden = hidden.indexOf('feed') >= 0;
@@ -228,8 +250,10 @@
       li.appendChild(S.icon(FEED_ICON[f.kind] || 'health'));
       var txt = el('span', 'f-text');
       if (f.kind === 'gift' && !f.name) txt.appendChild(el('span', null, t('f_giftAnon', [f.n || 1])));
+      else if (f.kind === 'marker') txt.appendChild(el('span', null, feedText(f)));
       else { txt.appendChild(el('b', null, f.name)); txt.appendChild(document.createTextNode(' ' + feedText(f))); }
       li.appendChild(txt);
+      if (f.kind === 'raid' && f.uid) li.appendChild(f.so ? el('span', 'so-done', '✓ ' + t('so').replace(/^\S+ /, '')) : shoutoutButton(f));
       li.appendChild(el('span', 'f-ago', S.ago(f.at)));
       feed.appendChild(li);
     }
@@ -313,6 +337,9 @@
       namesLine(t('sumNewChatterNames'), s.newChatterNames, s.newChatters),
       namesLine(t('sumSubNames'), s.subNames, s.subNames.length),
       namesLine(t('sumRaidNames'), s.raids.map(function (r) { return r.name + ' (' + r.viewers + ')'; }), s.raids.length),
+      namesLine(t('sumTopRewards'), (s.topRewards || []).map(function (x) { return '«' + x[0] + '» ×' + x[1]; }), (s.topRewards || []).length),
+      namesLine(t('sumTopUsers'), (s.topUsers || []).map(function (x) { return x[0] + ' ×' + x[1]; }), (s.topUsers || []).length),
+      namesLine(t('sumMarkers'), (s.markers || []).map(function (sec) { return S.duration(sec * 1000); }), (s.markers || []).length),
     ];
     for (var i = 0; i < lines.length; i++) if (lines[i]) box.appendChild(lines[i]);
     box.appendChild(el('div', 'sum-hint', t('sumHint')));
@@ -358,6 +385,26 @@
     });
   }
 
+  var toastTimer = 0;
+  function toast(text, ok) {
+    var el2 = document.getElementById('toast');
+    el2.textContent = text;
+    el2.className = 'toast ' + (ok ? 'ok' : 'bad');
+    el2.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el2.hidden = true; }, 4000);
+  }
+
+  document.getElementById('marker').addEventListener('click', function () {
+    var b = document.getElementById('marker');
+    b.disabled = true;
+    fetch('/api/stats/marker', { method: 'POST', headers: { 'x-tab-request': '1' } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) { toast(res.ok ? t('markerOk', [S.duration(res.j.position * 1000)]) : (res.j && res.j.error) || 'Error', res.ok); })
+      .catch(function () { toast(t('lost'), false); })
+      .then(function () { b.disabled = false; });
+  });
+
   document.getElementById('gear').addEventListener('click', function () {
     var m = document.getElementById('tiles-menu');
     m.hidden = !m.hidden;
@@ -387,5 +434,5 @@
   S.connect(function (m) { data = m; render(); }, setConn);
   setInterval(function () { tickSession(); }, 1000);
   // «N мин назад» в списках — раз в 30 с, даже без новых данных.
-  setInterval(function () { if (data && connected) renderLists(); }, 30000);
+  setInterval(function () { if (data && connected) renderLists(true); }, 30000);
 })();
