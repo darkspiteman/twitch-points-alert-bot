@@ -28,6 +28,9 @@ export interface PlayItem {
   fallbackAudio?: MediaRef | null;
   /** 1.7.0: что озвучить голосом Windows (уже очищено фильтрами); файл создаётся перед показом. */
   ttsText?: string | null;
+  /** 1.8.0: язык текста и голос, названный зрителем ([Павел] текст). */
+  ttsLang?: 'ru' | 'en';
+  ttsAlias?: string | null;
   /** Готовая озвучка: файл и его длительность. Играет после звука/видео награды (с картинкой — сразу). */
   tts?: { url: string; ms: number } | null;
   source: 'eventsub' | 'recovery' | 'test' | 'simulate';

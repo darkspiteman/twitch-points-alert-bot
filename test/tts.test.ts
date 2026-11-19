@@ -12,7 +12,7 @@ import { MemoryStore } from '../src/secure-store.ts';
 import { createServer } from '../src/server/http.ts';
 import { Backoff } from '../src/backoff.ts';
 import { StreamStats } from '../src/stats.ts';
-import { TtsEngine, ttsText, wavDurationMs, type RunFn } from '../src/tts.ts';
+import { TtsEngine, ttsText, ttsPrepare, chooseVoice, detectLang, wavDurationMs, type RunFn } from '../src/tts.ts';
 import type { EventSubMessage } from '../src/twitch/eventsub.ts';
 import { MockEventSub, standardTwitch, quietLogger, log, tmpDir, waitFor, redemptionEvent, json, type MockTwitch } from './helpers.ts';
 
@@ -334,4 +334,59 @@ test('бот: шаутаут рейдеру — автоматически по�
   await waitFor(() => calls.length === 3);
   assert.equal(calls[2], '1001>4004/1001');
   assert.ok(app.db.recentEvents(20).some((e) => e.type === 'shoutout' && /Second/.test(e.message)));
+});
+
+test('1.8.0: язык текста, голос на выбор зрителя [Павел], выбор голоса', () => {
+  const o = { ...TXT, templateEn: '{user} says: {text}', viewerVoice: true };
+  assert.equal(detectLang('Привет всем'), 'ru');
+  assert.equal(detectLang('hello everyone'), 'en');
+  assert.equal(detectLang('ok'), 'ru', 'пара латинских букв — ещё не английский');
+  assert.deepEqual(ttsPrepare('Bob', 'Hello there https://x.com', o), { text: 'Bob says: Hello there ссылка', lang: 'en', alias: null });
+  assert.deepEqual(ttsPrepare('Bob', 'Привет, зайди на https://example.com/very/long/path', o)!.lang, 'ru', 'латиница в ссылке не делает текст английским');
+  assert.deepEqual(ttsPrepare('Bob', '[Павел] привет', o), { text: 'Bob пишет: привет', lang: 'ru', alias: 'павел' });
+  assert.deepEqual(ttsPrepare('Bob', '[Павел] привет', { ...o, viewerVoice: false }), { text: 'Bob пишет: привет', lang: 'ru', alias: null }, 'выбор выключен — скобки не читаются');
+  assert.equal(ttsPrepare('Bob', '[Павел]', o), null, 'только скобки — читать нечего');
+  const voices = [{ id: 'IR', name: 'Microsoft Irina', lang: 'ru-RU' }, { id: 'PV', name: 'Microsoft Pavel', lang: 'ru-RU' }, { id: 'ZR', name: 'Microsoft Zira', lang: 'en-US' }];
+  const s = { ttsVoice: 'IR', ttsVoiceEn: '' };
+  assert.equal(chooseVoice(voices, { lang: 'ru', alias: 'павел' }, s), 'PV');
+  assert.equal(chooseVoice(voices, { lang: 'ru', alias: 'pavel' }, s), 'PV');
+  assert.equal(chooseVoice(voices, { lang: 'ru', alias: 'неизвестный' }, s), 'IR');
+  assert.equal(chooseVoice(voices, { lang: 'en', alias: null }, s), 'ZR');
+  assert.equal(chooseVoice(voices.slice(0, 2), { lang: 'en', alias: null }, s), 'IR', 'нет английского — основной');
+  assert.equal(ttsText('a', 'ты чурка', TXT), 'a пишет: ты пи-ип', 'оскорбления по национальности — тоже «пи-ип»');
+});
+
+test('1.8.0: озвучку можно выключить (только медиа); кнопка «Создать награду для озвучки»', async () => {
+  const twitch = standardTwitch();
+  const created: Array<Record<string, unknown>> = [];
+  twitch.on('POST', '/channel_points/custom_rewards', (_u, init) => {
+    const b = JSON.parse(String(init.body)); created.push(b);
+    return json(200, { data: [{ id: 'tts-reward', title: b.title, cost: b.cost, prompt: b.prompt, is_enabled: true, is_paused: false, background_color: '', is_user_input_required: true }] });
+  });
+  const spoken: string[] = [];
+  const es = await MockEventSub.create(); cleanup.push(() => es.close());
+  const { app, port } = await startApp({ twitch, es, ttsRun: fakeRun(spoken) });
+  const res = await api(port, 'POST', '/api/tts/reward', { cost: 500 });
+  assert.equal(res.status, 200);
+  assert.equal(created[0].cost, 500);
+  assert.equal(created[0].is_user_input_required, true);
+  assert.match(String(created[0].prompt), /\[Павел\]/);
+  const r = app.db.getReward('tts-reward')!;
+  assert.equal(r.tts, 1);
+  assert.equal(r.bot_enabled, 1);
+  assert.equal((await api(port, 'POST', '/api/tts/reward', { cost: 0 })).status, 400);
+
+  // Выключили озвучку: награда только с озвучкой не играет (ошибка), с медиа — играет без озвучки.
+  const plays = await overlay(port);
+  await waitFor(() => app.eventsub.status.state === 'connected');
+  await api(port, 'POST', '/api/settings', { ttsEnabled: false });
+  es.notification({ ...redemptionEvent({ id: 'red-1', rewardId: 'tts-reward' }), user_input: 'привет' });
+  await waitFor(() => statusOf(app, 'red-1') === 'failed');
+  const m = app.media.add('звук.wav', wav);
+  app.db.updateRewardConfig('tts-reward', { media_id: m.id });
+  es.notification({ ...redemptionEvent({ id: 'red-2', rewardId: 'tts-reward' }), user_input: 'привет' });
+  await waitFor(() => statusOf(app, 'red-2') === 'done');
+  assert.equal(plays[0].tts, null);
+  assert.deepEqual(spoken, []);
+  assert.equal((app.statsPayload() as { tts: { enabled: boolean } }).tts.enabled, false, 'док видит выключатель');
 });

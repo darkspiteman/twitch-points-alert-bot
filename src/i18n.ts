@@ -73,6 +73,27 @@ const EN: Array<[string, string]> = [
   ['Twitch разрешает шаутаут не чаще раза в 2 минуты и одному каналу — раз в час. Попробуйте позже.', 'Twitch allows a shoutout once every 2 minutes, and once an hour per channel. Try again later.'],
   ['Шаутаут работает только во время эфира', 'Shoutouts work only while live'],
 
+  ['{user} says: {text}', '{user} says: {text}'],
+  ['Озвучка выключена, а медиафайл для награды не выбран', 'Voice reading is off, and no media file is set for the reward'],
+  ['🗣 Скажи голосом', '🗣 Say it aloud'],
+  ['Напишите текст — бот прочитает его вслух. Голос можно выбрать: [Павел] или [Ирина] в начале. Без мата, ссылок и оскорблений.', 'Write a message — the bot will read it aloud. Pick a voice with [Pavel] or [Irina] at the start. No swearing, links or insults.'],
+
+  ['Голоса Piper не установлены: {m}', 'Piper voices were not installed: {m}'],
+  ['Голоса Piper установлены: выберите голос Piper в «Настройках» → «Озвучка текста зрителя»', 'Piper voices installed: choose a Piper voice in “Settings” → “Reading viewer text aloud”'],
+  ['Дмитрий', 'Dmitri'],
+  ['Денис', 'Denis'],
+  ['Скачиваю программу Piper…', 'Downloading Piper…'],
+  ['Распаковываю Piper…', 'Unpacking Piper…'],
+  ['Скачиваю голос «{n}»…', 'Downloading voice “{n}”…'],
+  ['Голоса Piper работают только в Windows', 'Piper voices work only on Windows'],
+  ['Файл Piper не совпадает с ожидаемым — установка отменена', 'The Piper file doesn’t match the expected one — installation cancelled'],
+  ['В архиве Piper нет piper.exe', 'piper.exe is missing from the Piper archive'],
+  ['Настройки голоса «{n}» не совпадают с ожидаемыми — установка отменена', 'Settings of voice “{n}” don’t match the expected ones — installation cancelled'],
+  ['Файл голоса «{n}» не совпадает с ожидаемым — установка отменена', 'The file of voice “{n}” doesn’t match the expected one — installation cancelled'],
+  ['Идёт установка — подождите', 'Installation in progress — please wait'],
+
+  ['Сайт с голосами (Hugging Face) недоступен — возможно, его блокирует провайдер. Включите VPN и нажмите «Скачать» ещё раз или скачайте файлы вручную (ссылки ниже).', 'The voice site (Hugging Face) is unreachable — your provider may be blocking it. Turn on a VPN and click “Download” again, or download the files manually (links below).'],
+
   // ---- статистика (1.5.0) ----
   ['{m}. Проверьте пароль в «Статистика» → «Подключение к OBS».', '{m}. Check the password in “Stats” → “Connecting to OBS”.'],
   ['Не удалось расшифровать пароль OBS WebSocket (например, база перенесена с другого компьютера) — введите его заново в «Статистика» → «Подключение к OBS».', 'Couldn’t decrypt the OBS WebSocket password (for example, the database was moved from another computer) — enter it again in “Stats” → “Connecting to OBS”.'],

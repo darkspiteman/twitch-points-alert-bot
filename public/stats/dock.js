@@ -177,7 +177,7 @@
     if (box.hidden) { queueSig = ''; return; }
     var q = data.queue;
     // Перерисовываем только при изменении: иначе кнопка может исчезнуть прямо под курсором (данные приходят каждые 2 с).
-    var sig = JSON.stringify([q, S.lang()]);
+    var sig = JSON.stringify([q, data.tts, S.lang()]);
     if (sig === queueSig) return;
     queueSig = sig;
     var head = document.getElementById('queue-head');
@@ -186,6 +186,12 @@
     head.appendChild(title);
     if (q.paused) head.appendChild(el('span', 'q-paused', t('q_paused')));
     var tools = el('span', 'q-tools');
+    if (data.tts) {
+      var on = !!data.tts.enabled;
+      tools.appendChild(iconButton(on ? '🗣' : '🔇', on ? t('ttsOn') : t('ttsOff'), function () {
+        fetch('/api/settings', { method: 'POST', headers: { 'x-tab-request': '1', 'content-type': 'application/json' }, body: JSON.stringify({ ttsEnabled: !on }) }).catch(function () { /* */ });
+      }, on ? '' : 'off'));
+    }
     tools.appendChild(q.paused
       ? iconButton('▶', t('q_resume'), function () { api('/api/queue/resume'); })
       : iconButton('⏸', t('q_pause'), function () { api('/api/queue/pause'); }));

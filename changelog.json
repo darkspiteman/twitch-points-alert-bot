@@ -1,5 +1,23 @@
 [
   {
+    "version": "1.8.0",
+    "date": "2026-11-20",
+    "changes": [
+      "Озвучка: английский текст читается английским голосом, русский — русским (голос для английского выбирается в «Настройках»; если английского голоса в Windows нет, панель подскажет, как его добавить).",
+      "Зритель может выбрать голос сам: [Павел] привет! или [Ирина] привет! в начале текста. Отключается галочкой «Зритель может выбрать голос».",
+      "Кнопка «Создать награду для озвучки в Twitch…» в «Настройках» → «Озвучка текста зрителя»: награда «🗣 Скажи голосом» с вводом текста, подсказкой для зрителей и паузой 30 секунд создаётся сразу настроенной.",
+      "Нейросетевые голоса Piper — Дмитрий и Денис: звучат живее голосов Windows, работают без интернета и бесплатно, лицензия позволяет использовать их на стриме. Кнопка «Скачать голоса Piper» в «Настройках» → «Озвучка текста зрителя» (около 140 МБ); файлы проверяются, подменённый не установится.",
+      "Быстрый выключатель озвучки 🗣 в доке у оповещений — Twitch советует выключать озвучку, когда отходите от компьютера. Фильтр теперь заменяет и оскорбления по национальности."
+    ],
+    "changes_en": [
+      "Voice reading: English text is read with an English voice, Russian with a Russian one (pick the English voice in “Settings”; if Windows has no English voice, the panel shows how to add one).",
+      "Viewers can choose the voice: [Pavel] hi! or [Irina] hi! at the start of the text. Turn it off with “Viewers can choose the voice”.",
+      "A “Create a voice reward on Twitch…” button in “Settings” → “Reading viewer text aloud”: a ready-made “🗣 Say it aloud” reward with text input, a hint for viewers and a 30-second cooldown.",
+      "Piper neural voices — Dmitri and Denis: more natural than Windows voices, offline and free, licensed for use on stream. A “Download Piper voices” button in “Settings” → “Reading viewer text aloud” (about 140 MB); files are verified, a tampered one won’t install.",
+      "A quick 🗣 voice switch next to alerts in the dock — Twitch advises turning text-to-speech off when you step away. The filter now also replaces ethnic slurs."
+    ]
+  },
+  {
     "version": "1.7.0",
     "date": "2026-11-20",
     "changes": [

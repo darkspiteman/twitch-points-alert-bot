@@ -7,7 +7,7 @@ import type { EventSubMessage } from './twitch/eventsub.ts';
 import type { HelixClient } from './twitch/helix.ts';
 import type { ScopedLogger } from './logger.ts';
 import { tr, effectiveLang } from './i18n.ts';
-import { ttsText } from './tts.ts';
+import { ttsPrepare } from './tts.ts';
 
 export const REDEMPTION_TYPE = 'channel.channel_points_custom_reward_redemption.add';
 export const REDEMPTION_VERSION = '1';
@@ -200,11 +200,13 @@ export class RedemptionRouter extends EventEmitter {
     const s = this.d.db.getSettings();
     // Озвучка текста зрителя (у теста — пример текста).
     const input = ctx.userInput.trim() || (ctx.source === 'test' ? this.t('Это проверка озвучки текста зрителя') : '');
-    const speech = reward.tts === 1 && input
-      ? ttsText(ctx.userName, input, { template: s.ttsTemplate, maxChars: s.ttsMaxChars, filter: s.ttsFilter, bannedWords: s.ttsBannedWords })
-      : '';
+    // Озвучка выключена в доке/настройках (например, стример отошёл) — играет только медиа награды.
+    const prep = reward.tts === 1 && input && s.ttsEnabled
+      ? ttsPrepare(ctx.userName, input, { template: s.ttsTemplate, templateEn: s.ttsTemplateEn, viewerVoice: s.ttsViewerVoice, maxChars: s.ttsMaxChars, filter: s.ttsFilter, bannedWords: s.ttsBannedWords })
+      : null;
+    const speech = prep?.text ?? '';
     const noMedia = !reward.media_id && !reward.video_id && !reward.sound_id;
-    if (noMedia && !speech) return { error: reward.tts === 1 ? 'Зритель не написал текст для озвучки, а медиафайл для награды не выбран' : 'Для награды не выбран медиафайл' };
+    if (noMedia && !speech) return { error: reward.tts === 1 ? (s.ttsEnabled ? 'Зритель не написал текст для озвучки, а медиафайл для награды не выбран' : 'Озвучка выключена, а медиафайл для награды не выбран') : 'Для награды не выбран медиафайл' };
     const load = (id: string | null, label: string): { ref: MediaRef | null; err: string | null } => {
       if (!id) return { ref: null, err: null };
       const m = this.d.db.getMedia(id);
@@ -250,7 +252,7 @@ export class RedemptionRouter extends EventEmitter {
         id: ctx.id, redemptionId: ctx.source === 'test' ? null : ctx.id, rewardId: reward.id, rewardTitle: reward.title, userName: ctx.userName,
         userInput: ctx.userInput, visual, audio, volume: Math.max(0, Math.min(100, reward.volume)) / 100, durationMs: reward.duration_ms,
         delayMs: reward.delay_ms, caption: caption || null, chromaKey: reward.chroma_key === 1 && visual?.kind === 'video' && !visual.remote,
-        fallbackAudio, ttsText: speech || null, source: ctx.source, createdAt: Date.now(),
+        fallbackAudio, ttsText: speech || null, ttsLang: prep?.lang, ttsAlias: prep?.alias ?? null, source: ctx.source, createdAt: Date.now(),
       },
     };
   }

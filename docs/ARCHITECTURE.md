@@ -160,4 +160,6 @@ DNS rebinding), изменяющие запросы требуют заголо�
   Роутер кладёт в `PlayItem.ttsText` очищенный текст, `App.prepareItem` (хук `prepare` очереди) создаёт `data\tts\<hex>.wav` → `PlayItem.tts { url, ms }`,
   overlay играет озвучку после звука/видео (с картинкой — сразу). Старые файлы удаляются раз в 6 часов.
 - Награды только в эфире — `App.applyRewardsLive` (EventSub stream.online/offline, при входе — Helix streams). Свои паузы — meta `rewards_paused_offline`.
+- 1.8.0: голоса Piper — `src/piper.ts` (установка по кнопке, хеши файлов зашиты в код), `TtsEngine` выбирает Piper для голосов `piper:<key>`;
+  `ttsPrepare`/`chooseVoice` — язык текста и [Имя] голоса.
 - Метки — `POST /api/stats/marker` → Helix `/streams/markers`; `StreamStats.noteMarker`. Топ — `SessionState.byReward/byUser`, `Db.redemptionTop`.

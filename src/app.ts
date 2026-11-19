@@ -21,7 +21,8 @@ import { writeLoader } from './overlay-loader.ts';
 import type { Transport } from './net/safe-download.ts';
 import { type Lang, effectiveLang, localize, tr } from './i18n.ts';
 import { StreamStats, STATS_SCOPES, STATS_EVENTS, STATS_EVENT_TYPES, SCOPE_MARKERS, SCOPE_SHOUTOUTS, type StreamSummary } from './stats.ts';
-import { TtsEngine, wavDurationMs, ttsText as ttsTextFn, type RunFn } from './tts.ts';
+import { TtsEngine, wavDurationMs, ttsPrepare, chooseVoice, type RunFn } from './tts.ts';
+import { PiperInstaller } from './piper.ts';
 import type { PlayItem } from './queue.ts';
 import { readObsWsConfig, type ObsWsConfig } from './obs-ws.ts';
 import { writeStatsLoaders, type StatsLoaders } from './overlay-loader.ts';
@@ -58,6 +59,9 @@ export interface AppOptions {
   shoutoutDelayMs?: number;
   /** Подмена запуска PowerShell для озвучки (тесты). */
   ttsRun?: RunFn;
+  /** Голоса Piper: подмена загрузки и запуска piper.exe (тесты). */
+  piperTransport?: Transport;
+  piperRun?: RunFn;
 }
 
 /**
@@ -77,6 +81,7 @@ export class App extends EventEmitter {
   readonly hub: Hub;
   readonly finder: MediaFinder;
   readonly tts: TtsEngine;
+  readonly piper: PiperInstaller;
   readonly updater: Updater;
   readonly stats: StreamStats;
   /** Файлы-загрузчики дока и overlay статистики (пусто, если записать не удалось). */
@@ -123,7 +128,13 @@ export class App extends EventEmitter {
       fetchFn: opts.fetchFn, transport: opts.downloadTransport,
       onChange: (s) => this.hub.broadcastPanel({ type: 'update', update: s }),
     });
-    this.tts = new TtsEngine({ dir: path.join(opts.paths.dataDir, 'tts'), log: opts.logger.child('tts'), run: opts.ttsRun });
+    this.piper = new PiperInstaller({ dir: path.join(opts.paths.dataDir, 'piper'), log: opts.logger.child('piper'), transport: opts.piperTransport });
+    this.piper.on('status', (st: { busy: boolean; error: string; installed: boolean }) => {
+      if (!st.busy && st.error) this.journal('error', 'tts', `Голоса Piper не установлены: ${st.error}`);
+      else if (!st.busy && st.installed) this.journal('info', 'tts', 'Голоса Piper установлены: выберите голос Piper в «Настройках» → «Озвучка текста зрителя»');
+      this.hub?.broadcastPanel({ type: 'invalidate', what: 'tts' });
+    });
+    this.tts = new TtsEngine({ dir: path.join(opts.paths.dataDir, 'tts'), log: opts.logger.child('tts'), run: opts.ttsRun, piper: this.piper, runPiper: opts.piperRun });
     this.queue = new PlaybackQueue(this.hub, () => this.db.getSettings(), opts.logger.child('queue'), (item) => this.prepareItem(item));
     this.router = new RedemptionRouter({
       db: this.db, media: this.media, queue: this.queue, log: opts.logger.child('router'),
@@ -185,7 +196,9 @@ export class App extends EventEmitter {
     if (!it.ttsText || it.tts) return it;
     const s = this.db.getSettings();
     try {
-      const name = await this.tts.synth(it.ttsText, s.ttsVoice, s.ttsRate);
+      const voices = await this.tts.voices().catch(() => []);
+      const voice = chooseVoice(voices, { lang: it.ttsLang ?? 'ru', alias: it.ttsAlias ?? null }, s);
+      const name = await this.tts.synth(it.ttsText, voice, s.ttsRate);
       return { ...it, tts: { url: `/tts/${name}`, ms: wavDurationMs(path.join(this.opts.paths.dataDir, 'tts', name)) } };
     } catch (e) {
       // Без озвучки: если есть звук или видео — играем их, иначе оповещение не состоится.
@@ -274,14 +287,25 @@ export class App extends EventEmitter {
     }
   }
 
+  /** Награда для озвучки (1.8.0): в Twitch — с вводом текста, в боте — включена, с озвучкой. */
+  async createTtsReward(cost: number): Promise<{ id: string; title: string }> {
+    const r = await this.createReward({
+      title: tr('🗣 Скажи голосом', this.lang), cost, inputRequired: true, cooldownSec: 30,
+      prompt: tr('Напишите текст — бот прочитает его вслух. Голос можно выбрать: [Павел] или [Ирина] в начале. Без мата, ссылок и оскорблений.', this.lang),
+    });
+    this.db.updateRewardConfig(r.id, { tts: 1, bot_enabled: 1 });
+    this.hub.broadcastPanel({ type: 'invalidate', what: 'rewards' });
+    return r;
+  }
+
   /** Проверка голоса из панели: только озвучка, без награды. */
   testTts(text: string): { ok: true } | { ok: false; error: string } {
     const s = this.db.getSettings();
-    const speech = ttsTextFor(this.lang, s, text);
-    if (!speech) return { ok: false, error: 'Нечего озвучивать' };
+    const prep = ttsPrepare(tr('Тест', this.lang), text, { template: s.ttsTemplate, templateEn: s.ttsTemplateEn, viewerVoice: s.ttsViewerVoice, maxChars: s.ttsMaxChars, filter: s.ttsFilter, bannedWords: s.ttsBannedWords });
+    if (!prep) return { ok: false, error: 'Нечего озвучивать' };
     const r = this.queue.enqueue({
       id: `test-${crypto.randomUUID()}`, redemptionId: null, rewardId: '', rewardTitle: tr('Проверка озвучки', this.lang), userName: tr('Тест', this.lang), userInput: text,
-      visual: null, audio: null, volume: 1, durationMs: 0, delayMs: 0, caption: null, ttsText: speech, source: 'test', createdAt: Date.now(),
+      visual: null, audio: null, volume: 1, durationMs: 0, delayMs: 0, caption: null, ttsText: prep.text, ttsLang: prep.lang, ttsAlias: prep.alias, source: 'test', createdAt: Date.now(),
     });
     return r.ok ? { ok: true } : { ok: false, error: r.reason };
   }
@@ -298,6 +322,7 @@ export class App extends EventEmitter {
       stats: { ...v, obs: { ...v.obs, message: v.obs.message ? tr(v.obs.message, this.lang) : '' } },
       // Очередь оповещений — для дока (что играет, кто ждёт, «Пропустить» / «Пауза»).
       queue: this.queue.snapshot(),
+      tts: { enabled: s.ttsEnabled },
       overlay: {
         fields: s.statsOverlayFields.split(',').filter(Boolean), layout: s.statsOverlayLayout, style: s.statsOverlayStyle,
         labels: s.statsOverlayLabels, scale: s.statsOverlayScale,
@@ -543,7 +568,7 @@ export class App extends EventEmitter {
   }
 
   /** Создание новой награды бота в Twitch. */
-  async createReward(opts: { title: string; cost: number; cooldownSec?: number; prompt?: string; paused?: boolean }): Promise<{ id: string; title: string }> {
+  async createReward(opts: { title: string; cost: number; cooldownSec?: number; prompt?: string; paused?: boolean; inputRequired?: boolean }): Promise<{ id: string; title: string }> {
     const user = this.auth.user;
     if (!user?.id) throw new Error('Не выполнен вход в Twitch');
     if (!this.auth.hasScope(SCOPE_MANAGE)) throw new Error('Нет права управлять наградами. Включите его в настройках и войдите в Twitch заново.');
@@ -552,6 +577,7 @@ export class App extends EventEmitter {
     const cost = Number(opts.cost);
     if (!Number.isInteger(cost) || cost < 1) throw new Error('Стоимость должна быть целым числом от 1');
     const body: Record<string, unknown> = { title, cost, prompt: opts.prompt ?? '', is_enabled: true, background_color: '#7838F8' };
+    if (opts.inputRequired) body.is_user_input_required = true;
     const cd = Number(opts.cooldownSec ?? 0);
     if (cd > 0) { body.is_global_cooldown_enabled = true; body.global_cooldown_seconds = Math.round(cd); }
     const created = await this.helix.createCustomReward(user.id, body);
@@ -625,9 +651,4 @@ export class App extends EventEmitter {
     await this.hub.close();
     this.db.close();
   }
-}
-
-/** Текст для проверки голоса из панели (те же фильтры, что у зрителей). */
-function ttsTextFor(lang: Lang, s: { ttsTemplate: string; ttsMaxChars: number; ttsFilter: boolean; ttsBannedWords: string }, text: string): string {
-  return ttsTextFn(tr('Тест', lang), text, { template: s.ttsTemplate, maxChars: s.ttsMaxChars, filter: s.ttsFilter, bannedWords: s.ttsBannedWords });
 }

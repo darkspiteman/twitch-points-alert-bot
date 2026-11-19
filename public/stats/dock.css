@@ -134,3 +134,4 @@ li.f-redeem .ic { color: #b58cff; }
 li.f-marker .ic { color: #5ab0ff; }
 .qbtn.so-btn { font-size: 11px; padding: 1px 6px; }
 .so-done { color: var(--good); font-size: 11px; flex: none; }
+.qbtn.off { background: rgba(255, 92, 92, .2); }

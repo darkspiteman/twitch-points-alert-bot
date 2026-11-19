@@ -144,6 +144,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     if (ok.obsWsPassword !== undefined || ok.obsWsPort !== undefined || ok.streamApp !== undefined || ok.obsConfigDir !== undefined) app.stats.syncObs(true);
     // «Награды только в эфире» включили или выключили — применить сразу.
     if (ok.rewardsOnlyLive !== undefined) void app.queueRewardsLive(null);
+    if (ok.ttsEnabled !== undefined && app.hub.statsClientCount > 0) app.hub.broadcastStats(app.statsPayload());
     if (Object.keys(ok).some((k) => k.startsWith('statsOverlay')) || ok.language !== undefined) app.hub.broadcastStats(app.statsPayload());
     if (ok.klipyApiKey !== undefined || ok.freesoundApiKey !== undefined) {
       app.finder.registerKeys();
@@ -212,7 +213,26 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     }
     return updated;
   });
-  add('GET', '/api/tts/voices', async () => ({ available: app.tts.available, voices: await app.tts.voices() }));
+  add('GET', '/api/tts/voices', async () => ({
+    available: app.tts.available,
+    voices: (await app.tts.voices()).map((v) => (v.id.startsWith('piper:') ? { ...v, name: `${tr(v.name.replace(/ \(Piper\)$/, ''), app.lang)} (Piper)` } : v)),
+  }));
+  /** Состояние Piper на языке панели. */
+  const piperStatus = () => { const st = app.piper.status(); return { ...st, step: tr(st.step, app.lang), error: tr(st.error, app.lang), voices: st.voices.map((v) => tr(v, app.lang)) }; };
+  add('GET', '/api/tts/piper', () => piperStatus());
+  add('POST', '/api/tts/piper/install', () => { app.piper.install(); return piperStatus(); });
+  add('POST', '/api/tts/piper/remove', () => {
+    try { app.piper.remove(); } catch (e) { throw new HttpError(400, (e as Error).message); }
+    const s = app.db.getSettings();
+    // Выбранный голос Piper больше не существует — вернуть голоса Windows.
+    if (s.ttsVoice.startsWith('piper:')) app.db.updateSettings({ ttsVoice: '' });
+    return piperStatus();
+  });
+  add('POST', '/api/tts/reward', async (_q, _r, _p, body) => {
+    const cost = Number((body as { cost?: number } | null)?.cost ?? 300);
+    if (!Number.isInteger(cost) || cost < 1 || cost > 10_000_000) throw new HttpError(400, 'Стоимость должна быть целым числом от 1');
+    try { return await app.createTtsReward(cost); } catch (e) { throw new HttpError(400, (e as Error).message); }
+  });
   add('POST', '/api/tts/test', (_q, _r, _p, body) => {
     const text = String((body as { text?: string } | null)?.text ?? '').slice(0, 500);
     const r = app.testTts(text);

@@ -15,10 +15,13 @@ import type { Readable } from 'node:stream';
 export class DownloadError extends Error {
   readonly code: 'bad_url' | 'blocked' | 'http' | 'too_big' | 'timeout' | 'network' | 'redirects';
   readonly status?: number;
-  constructor(code: DownloadError['code'], message: string, status?: number) {
+  /** Код системной ошибки (ECONNRESET, ETIMEDOUT…) — для журнала. */
+  readonly detail?: string;
+  constructor(code: DownloadError['code'], message: string, status?: number, detail?: string) {
     super(message);
     this.code = code;
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -128,7 +131,7 @@ export async function safeDownload(rawUrl: string, opts: DownloadOptions): Promi
       } catch (e) {
         if (e instanceof DownloadError) throw e;
         if (ac.signal.aborted) throw new DownloadError('timeout', 'Сайт отвечает слишком долго — попробуйте позже');
-        throw new DownloadError('network', 'Не удалось подключиться к сайту. Проверьте интернет и ссылку.');
+        throw new DownloadError('network', 'Не удалось подключиться к сайту. Проверьте интернет и ссылку.', undefined, String((e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? ''));
       }
       if ([301, 302, 303, 307, 308].includes(res.status)) {
         res.body.resume();

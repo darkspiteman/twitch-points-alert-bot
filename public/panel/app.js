@@ -1295,25 +1295,84 @@
 
     // Озвучка текста зрителя (1.7.0).
     var voiceSel = h('select', { disabled: true }, h('option', { value: '', text: T('Загрузка…') }));
+    var voiceEnSel = h('select', { disabled: true }, h('option', { value: '', text: T('Загрузка…') }));
+    var enHint = h('span', { class: 'hint' });
+    var viewerHint = h('span');
     api('GET', '/api/tts/voices').then(function (r) {
-      clear(voiceSel);
+      var list = r.voices || [];
+      clear(voiceSel); clear(voiceEnSel);
       voiceSel.appendChild(h('option', { value: '', text: T('Автоматически (русский голос)'), selected: !S.settings.ttsVoice }));
-      (r.voices || []).forEach(function (v) { voiceSel.appendChild(h('option', { value: v.id, text: v.name + ' (' + v.lang + ')', selected: S.settings.ttsVoice === v.id })); });
-      voiceSel.disabled = !r.available;
+      voiceEnSel.appendChild(h('option', { value: '', text: T('Автоматически (английский голос)'), selected: !S.settings.ttsVoiceEn }));
+      list.forEach(function (v) {
+        voiceSel.appendChild(h('option', { value: v.id, text: v.name + ' (' + v.lang + ')', selected: S.settings.ttsVoice === v.id }));
+        voiceEnSel.appendChild(h('option', { value: v.id, text: v.name + ' (' + v.lang + ')', selected: S.settings.ttsVoiceEn === v.id }));
+      });
+      voiceSel.disabled = voiceEnSel.disabled = !r.available;
+      var hasEn = list.some(function (v) { return /^en/i.test(v.lang); });
+      enHint.textContent = hasEn ? '' : T('Английского голоса нет — английский текст прочитает основной голос. Добавить: Параметры Windows → Время и язык → Речь → Добавить голоса → English (United States).');
+      viewerHint.textContent = list.length ? ' ' + T('Голоса: {0}.', [list.map(function (v) { return v.name.replace(/^Microsoft\s+/i, ''); }).join(', ')]) : '';
     }, function () { /* нет связи */ });
     voiceSel.addEventListener('change', function () { saveSetting('ttsVoice', voiceSel.value); });
+    voiceEnSel.addEventListener('change', function () { saveSetting('ttsVoiceEn', voiceEnSel.value); });
+    // Нейросетевые голоса Piper (1.8.0): скачиваются по кнопке, работают без интернета.
+    var piperBox = h('div', { class: 'piper-box' });
+    var piperTimer = 0;
+    var renderPiper = function (st) {
+      clear(piperBox);
+      piperBox.appendChild(h('div', { class: 'small' }, h('b', { text: T('Нейросетевые голоса Piper') + ' ' }),
+        T('— живее голосов Windows, бесплатно и без интернета. Дмитрий и Денис (мужские) — лицензия CC0: можно на стриме.')));
+      if (st.busy) piperBox.appendChild(h('div', { class: 'small', text: '⏳ ' + (st.step || T('Подождите…')) }));
+      else if (st.installed) {
+        piperBox.appendChild(h('div', { class: 'small ok', text: '✓ ' + T('Установлены: {0}. Выберите голос выше.', [st.voices.join(', ')]) }));
+        piperBox.appendChild(h('button', { class: 'small danger', text: T('Удалить голоса Piper'), onclick: function () {
+          if (confirm(T('Удалить голоса Piper? Их можно будет скачать снова.'))) act(post('/api/tts/piper/remove')).then(function () { render(); });
+        } }));
+      } else {
+        if (st.error) piperBox.appendChild(h('div', { class: 'small bad', text: st.error }));
+        piperBox.appendChild(h('button', { class: 'small primary', text: T('Скачать голоса Piper (≈{0} МБ)', [st.sizeMb]), onclick: function () {
+          act(post('/api/tts/piper/install')).then(function (r) { renderPiper(r); poll(); });
+        } }));
+        if (st.error) {
+          // Ручная установка: скачать в браузере (например, с VPN) и положить в папку бота — бот проверит файлы.
+          piperBox.appendChild(h('details', { class: 'small' }, h('summary', { text: T('Скачать голоса вручную') }),
+            h('ol', null,
+              h('li', null, T('Скачайте в браузере эти файлы:'), h('ul', null, st.links.map(function (l) { return h('li', null, h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', text: l.name })); }))),
+              h('li', null, T('Положите их в папку:'), copyField(st.folder, T('Путь скопирован'))),
+              h('li', null, T('Нажмите «Скачать голоса Piper» ещё раз — бот проверит файлы и докачает недостающее.')))));
+        }
+      }
+    };
+    var poll = function () {
+      clearTimeout(piperTimer);
+      piperTimer = setTimeout(function () {
+        if (page !== 'settings') return;
+        api('GET', '/api/tts/piper').then(function (st) { renderPiper(st); if (st.busy) poll(); else if (st.installed) render(); }, function () { /* */ });
+      }, 1500);
+    };
+    api('GET', '/api/tts/piper').then(function (st) { renderPiper(st); if (st.busy) poll(); }, function () { /* нет связи */ });
     var ttsTest = h('input', { type: 'text', value: T('Привет! Спасибо за баллы, это проверка голоса.'), maxlength: 300 });
     var banned = h('textarea', { rows: 2, placeholder: T('слово1, слово2') });
     banned.value = S.settings.ttsBannedWords || '';
     banned.addEventListener('change', function () { saveSetting('ttsBannedWords', banned.value); });
     root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Озвучка текста зрителя') }),
       h('p', { class: 'small muted', text: T('Награда с галочкой «Озвучить текст зрителя» читает вслух то, что зритель написал при получении награды. Голоса встроены в Windows, интернет не нужен.') }),
+      settingField(T('Озвучка включена'), 'ttsEnabled', { type: 'check', hint: T('Twitch советует выключать озвучку, когда вы отходите от компьютера: за то, что звучит на стриме, отвечает стример. Быстрый выключатель — кнопка 🗣 в доке у оповещений.') }),
+      h('div', { class: 'reward-actions' }, h('button', { class: 'small primary', text: T('Создать награду для озвучки в Twitch…'), onclick: function () {
+        var c = prompt(T('Стоимость награды «🗣 Скажи голосом» в баллах:'), '300');
+        if (!c) return;
+        act(post('/api/tts/reward', { cost: Number(c) }), T('Награда создана — она уже в разделе «Награды»'));
+      } })),
       h('div', { class: 'form-grid' },
         h('div', { class: 'field' }, h('label', { text: T('Голос') }), voiceSel, h('span', { class: 'hint', text: T('Ещё голоса: Параметры Windows → Время и язык → Речь → Добавить голоса') })),
         settingField(T('Скорость, %'), 'ttsRate', { type: 'number', min: 50, max: 300 }),
         settingField(T('Громкость, %'), 'ttsVolume', { type: 'number', min: 0, max: 100 }),
         settingField(T('Не длиннее, символов'), 'ttsMaxChars', { type: 'number', min: 20, max: 500 })),
+      piperBox,
+      h('div', { class: 'form-grid' },
+        h('div', { class: 'field' }, h('label', { text: T('Голос для английского текста') }), voiceEnSel, enHint),
+        settingField(T('Что читать по-английски'), 'ttsTemplateEn', { hint: T('Если текст на английском') })),
       settingField(T('Что читать'), 'ttsTemplate', { hint: T('{user} — ник зрителя, {text} — его текст') }),
+      h('div', null, settingField(T('Зритель может выбрать голос'), 'ttsViewerVoice', { type: 'check', hint: T('Если текст начинается с имени в квадратных скобках — [Павел] привет! — его прочитает этот голос.') }), h('div', { class: 'hint small muted', style: 'margin:-6px 0 10px 24px' }, viewerHint)),
       settingField(T('Заменять мат на «пи-ип»'), 'ttsFilter', { type: 'check', hint: T('Ссылки всегда читаются как «ссылка», длинные повторы букв сокращаются.') }),
       h('div', { class: 'field' }, h('label', { text: T('Свои запрещённые слова (через запятую)') }), banned),
       h('div', { class: 'field' }, h('label', { text: T('Проверить голос') }), h('div', { class: 'copy-field' }, ttsTest,

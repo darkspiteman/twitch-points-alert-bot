@@ -130,6 +130,11 @@ export interface Settings {
   ttsFilter: boolean;
   /** Свои запрещённые слова через запятую. */
   ttsBannedWords: string;
+  /** 1.8.0: голос для английского текста ('' — первый английский), шаблон для него, голос на выбор зрителя [Павел], общий выключатель озвучки. */
+  ttsVoiceEn: string;
+  ttsTemplateEn: string;
+  ttsViewerVoice: boolean;
+  ttsEnabled: boolean;
   /** 1.7.0: награды бота доступны только во время эфира (вне эфира — на паузе в Twitch). */
   rewardsOnlyLive: boolean;
   /** 1.7.0: шаутаут рейдеру автоматически. */
@@ -200,6 +205,10 @@ export function defaultSettings(): Settings {
     ttsMaxChars: 200,
     ttsFilter: true,
     ttsBannedWords: '',
+    ttsVoiceEn: '',
+    ttsTemplateEn: '{user} says: {text}',
+    ttsViewerVoice: true,
+    ttsEnabled: true,
     rewardsOnlyLive: false,
     autoShoutout: false,
   };
@@ -235,12 +244,12 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
         case 'ttsRate': num(k, 50, 300); break;
         case 'ttsVolume': num(k, 0, 100); break;
         case 'ttsMaxChars': num(k, 20, 500); break;
-        case 'ttsVoice': {
+        case 'ttsVoice': case 'ttsVoiceEn': {
           const v = String(patch[k] ?? '');
-          if (v.length > 200 || !/^[\w\\\-. {}]*$/.test(v)) throw new Error('Неверный голос озвучки');
+          if (v.length > 200 || !/^[\w\\\-. {}:]*$/.test(v)) throw new Error('Неверный голос озвучки');
           out[k] = v; break;
         }
-        case 'ttsTemplate': {
+        case 'ttsTemplate': case 'ttsTemplateEn': {
           const v = String(patch[k] ?? '').trim();
           if (v.length > 100) throw new Error('Шаблон озвучки слишком длинный');
           if (!v.includes('{text}')) throw new Error('В шаблоне озвучки должно быть {text} — текст зрителя');
@@ -275,7 +284,7 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (!allowed.includes(String(patch[k]))) throw new Error('Неверное положение overlay');
           out[k] = patch[k]; break;
         }
-        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck': case 'statsOverlayLabels': case 'ttsFilter': case 'rewardsOnlyLive': case 'autoShoutout':
+        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck': case 'statsOverlayLabels': case 'ttsFilter': case 'rewardsOnlyLive': case 'autoShoutout': case 'ttsViewerVoice': case 'ttsEnabled':
           out[k] = Boolean(patch[k]); break;
         case 'clientId': {
           const v = String(patch[k] ?? '').trim();
