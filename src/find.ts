@@ -123,7 +123,7 @@ export class MediaFinder {
 
   private async klipyGet(path: string, params: Record<string, string>, timeoutMs = 10_000): Promise<Record<string, unknown>[]> {
     const key = this.d.db.getSettings().klipyApiKey;
-    if (!key) throw new FindError('Сначала вставьте ключ Klipy: «Настройки» → «Поиск медиа».');
+    if (!key) throw new FindError('Сначала вставьте ключ Klipy: «Настройки» → «Ключи сервисов».');
     const url = new URL(`${this.klipyBase}/api/v1/${encodeURIComponent(key)}/${path}`);
     for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
     let res: Response;
@@ -135,7 +135,7 @@ export class MediaFinder {
     let errText = '';
     if (!res.ok) { try { errText = JSON.stringify(await res.json()); } catch { /* не JSON */ } }
     // Неверный ключ Klipy возвращает 404 с текстом «The provided API key is invalid».
-    if (res.status === 401 || res.status === 403 || /api key/i.test(errText)) throw new FindError('Klipy не принял ключ. Проверьте ключ в «Настройки» → «Поиск медиа».', 400);
+    if (res.status === 401 || res.status === 403 || /api key/i.test(errText)) throw new FindError('Klipy не принял ключ. Проверьте ключ в «Настройки» → «Ключи сервисов».', 400);
     if (res.status === 429) throw new FindError('Превышен лимит запросов Klipy (тестовый ключ — 100 в час). Подождите немного или запросите production-доступ в Partner Panel Klipy.', 429);
     if (!res.ok) throw new FindError(`Сервис Klipy временно недоступен (ошибка ${res.status}). Попробуйте позже.`, 502);
     let body: { result?: boolean; data?: { data?: unknown[] } | unknown[] };
@@ -247,7 +247,7 @@ export class MediaFinder {
   // ---------------- Freesound ----------------
   private async freesoundGet(path: string, params: Record<string, string>): Promise<Record<string, unknown>> {
     const key = this.d.db.getSettings().freesoundApiKey;
-    if (!key) throw new FindError('Сначала вставьте ключ Freesound: «Настройки» → «Поиск медиа».');
+    if (!key) throw new FindError('Сначала вставьте ключ Freesound: «Настройки» → «Ключи сервисов».');
     const url = new URL(`${this.freesoundBase}/${path}`);
     for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
     let res: Response;
@@ -257,7 +257,7 @@ export class MediaFinder {
     } catch {
       throw new FindError('Нет связи с Freesound. Проверьте интернет и попробуйте ещё раз.', 502);
     }
-    if (res.status === 401 || res.status === 403) throw new FindError('Freesound не принял ключ. Проверьте ключ в «Настройки» → «Поиск медиа».', 400);
+    if (res.status === 401 || res.status === 403) throw new FindError('Freesound не принял ключ. Проверьте ключ в «Настройки» → «Ключи сервисов».', 400);
     if (res.status === 404) throw new FindError('Звук не найден на Freesound', 404);
     if (res.status === 429) throw new FindError('Превышен лимит запросов Freesound (60 в минуту, 2000 в день). Подождите немного.', 429);
     if (!res.ok) throw new FindError(`Сервис Freesound временно недоступен (ошибка ${res.status}). Попробуйте позже.`, 502);

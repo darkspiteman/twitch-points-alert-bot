@@ -1,5 +1,5 @@
 // Twitch Alert Bot — статистика на экране стрима (Browser Source). Что показывать — выбирается в панели бота
-// («Статистика» → «На экране стрима») и меняется сразу, без правки источника в OBS.
+// («OBS / Streamlabs» → «Статистика на экране») и меняется сразу, без правки источника в OBS.
 (function () {
   'use strict';
   var S = window.TABStats;
@@ -67,6 +67,6 @@
   S.connect(function (m) { data = m; update(); }, function (ok) {
     // Нет связи — на экране стрима ничего не показываем (зрители не должны видеть служебные сообщения).
     bar.hidden = !ok;
-  });
+  }, 'overlay');
   setInterval(function () { if (data && cells.session) cells.session.value.textContent = value('session', data.stats); }, 1000);
 })();

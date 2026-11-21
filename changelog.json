@@ -1,5 +1,39 @@
 [
   {
+    "version": "2.0.0",
+    "date": "2026-11-21",
+    "changes": [
+      "Новая панель управления: меню по группам — «Во время стрима» (Пульт, Стрим), «Контент» (Награды, Медиатека, Озвучка), «Подключение» (OBS / Streamlabs), «Система» (Настройки, Журнал, Помощь, Поддержать автора).",
+      "Пульт вместо «Главной»: состояние, очередь, «Текст ждёт проверки», проверка награды, последние награды и только важные предупреждения. Чек-лист настройки исчезает, когда всё готово.",
+      "Страница «OBS / Streamlabs»: все источники (оповещения, док, статистика на экране, счётчики, подключение к OBS) на одной странице — с меткой «на связи» и кнопкой «Копировать».",
+      "Награды — компактный список с фильтрами, настройки награды раскрываются по нажатию. «Медиа» и «Найти медиа» объединены в «Медиатеку», у озвучки — свой раздел, «Настройки» разбиты на вкладки, обновления — в «Настройки» → «Система».",
+      "Новое оформление: шрифты, значки, выключатели; три палитры на выбор — «Аметист», «Полночь», «Графит» («Настройки» → «Основное»). Док в OBS оформлен так же."
+    ],
+    "changes_en": [
+      "New control panel: the menu is grouped — “During the stream” (Control, Stream), “Content” (Rewards, Media library, Voice), “Connection” (OBS / Streamlabs), “System” (Settings, Log, Help, Support the author).",
+      "Control instead of “Home”: status, queue, “Text awaiting review”, reward test, latest rewards and only important warnings. The setup checklist disappears once everything is ready.",
+      "“OBS / Streamlabs” page: every source (alerts, dock, stats on screen, counters, connecting to OBS) on one page — with a “connected” label and a “Copy” button.",
+      "Rewards are a compact list with filters; reward settings expand on click. “Media” and “Find media” are merged into the “Media library”, text-to-speech has its own section, “Settings” are split into tabs, updates are in “Settings” → “System”.",
+      "New look: fonts, icons, switches; three palettes to choose from — “Amethyst”, “Midnight”, “Graphite” (“Settings” → “General”). The OBS dock matches."
+    ]
+  },
+  {
+    "version": "1.9.0",
+    "date": "2026-11-20",
+    "changes": [
+      "Проверка текста перед озвучкой: текст зрителя сначала появляется в доке OBS и на главной панели — «Озвучить», «Без озвучки» или «Отклонить» (оповещения не будет, баллы вернутся зрителю). Можно проверять всех или только новых зрителей: «Настройки» → «Озвучка текста зрителя».",
+      "Резервная копия одной кнопкой: награды со звуками и видео, медиатека, настройки, история и счётчики — в один файл. Восстановление из копии — там же, в «Настройках»; текущие данные перед этим сохраняются отдельно.",
+      "Счётчики «+1 / −1» в доке OBS со счётом на экране стрима — например, «Смерти» или «Победы». Добавить и настроить: «Статистика» → «Счётчики».",
+      "Итоги стрима в Telegram: после эфира бот присылает сводку — зрители, новые фолловеры и подписки, рейды, кто впервые был в чате, топ наград. Настройка: «Статистика» → «Итоги стрима в Telegram»."
+    ],
+    "changes_en": [
+      "Review text before reading it aloud: the viewer’s text first appears in the OBS dock and on the Home page — “Read aloud”, “Without voice” or “Reject” (no alert, the viewer gets the points back). Review everyone or only new viewers: “Settings” → “Reading viewer text aloud”.",
+      "One-click backup: rewards with sounds and videos, the media library, settings, history and counters in one file. Restore from a backup in “Settings” too; the current data is saved separately first.",
+      "“+1 / −1” counters in the OBS dock with the count on stream — e.g. “Deaths” or “Wins”. Add and set them up in “Stats” → “Counters”.",
+      "Stream summary in Telegram: after the stream the bot sends a summary — viewers, new followers and subs, raids, first-time chatters, top rewards. Set it up in “Stats” → “Stream summary in Telegram”."
+    ]
+  },
+  {
     "version": "1.8.0",
     "date": "2026-11-20",
     "changes": [

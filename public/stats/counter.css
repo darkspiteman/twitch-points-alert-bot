@@ -1,0 +1,22 @@
+/* Счётчики на экране стрима. Масштаб — переменная --scale (из настроек панели). */
+:root { --scale: 1; color-scheme: dark; }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body { font: 700 calc(26px * var(--scale))/1.2 "Segoe UI", system-ui, sans-serif; padding: calc(10px * var(--scale)); }
+
+.list { display: inline-flex; flex-direction: column; gap: calc(6px * var(--scale)); }
+.list[hidden] { display: none; }
+.row { display: flex; align-items: center; gap: calc(14px * var(--scale)); padding: calc(6px * var(--scale)) calc(14px * var(--scale)); border-radius: calc(8px * var(--scale)); }
+.name { font-weight: 600; white-space: nowrap; }
+.value { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 1.15em; min-width: 1.6em; text-align: right; }
+
+.dark .row { background: rgba(14, 14, 20, .78); color: #fff; }
+.dark .value { color: #c9a7ff; }
+.light .row { background: rgba(255, 255, 255, .92); color: #18181b; box-shadow: 0 2px 8px rgba(0, 0, 0, .2); }
+.light .value { color: #6d28d9; }
+.clear .row { background: none; color: #fff; padding-left: 0; text-shadow: 0 1px 3px #000, 0 0 8px rgba(0, 0, 0, .8); }
+.twitch .row { background: linear-gradient(135deg, rgba(145, 71, 255, .92), rgba(100, 65, 165, .92)); color: #fff; }
+
+@keyframes bumpUp { 0% { transform: scale(1); } 30% { transform: scale(1.12); filter: brightness(1.4); } 100% { transform: scale(1); } }
+@keyframes bumpDown { 0% { transform: scale(1); } 30% { transform: scale(.92); opacity: .7; } 100% { transform: scale(1); } }
+.row.bump-up { animation: bumpUp .5s ease-out; }
+.row.bump-down { animation: bumpDown .4s ease-out; }

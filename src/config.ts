@@ -135,13 +135,24 @@ export interface Settings {
   ttsTemplateEn: string;
   ttsViewerVoice: boolean;
   ttsEnabled: boolean;
+  /** 1.9.0: проверка текста перед озвучкой — никому, только новым зрителям (их текст ещё не озвучивался), всем. */
+  ttsReview: 'off' | 'new' | 'all';
+  /** 1.9.0: итоги стрима в Telegram — включено, токен бота (в базе — зашифрован), чат (id или @канал). */
+  telegramEnabled: boolean;
+  telegramToken: string;
+  telegramChatId: string;
+  /** 1.9.0: счётчики на экране стрима — стиль и масштаб, %. */
+  /** 2.0.0: палитра панели и дока OBS. */
+  panelTheme: 'amethyst' | 'midnight' | 'graphite';
+  counterStyle: 'dark' | 'light' | 'clear' | 'twitch';
+  counterScale: number;
   /** 1.7.0: награды бота доступны только во время эфира (вне эфира — на паузе в Twitch). */
   rewardsOnlyLive: boolean;
   /** 1.7.0: шаутаут рейдеру автоматически. */
   autoShoutout: boolean;
 }
 
-export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey', 'obsWsPassword'] as const;
+export const SECRET_SETTINGS = ['klipyApiKey', 'freesoundApiKey', 'obsWsPassword', 'telegramToken'] as const;
 /** Признак зашифрованного ключа в базе: «enc:<DPAPI в base64>». */
 export const ENC_PREFIX = 'enc:';
 
@@ -209,6 +220,13 @@ export function defaultSettings(): Settings {
     ttsTemplateEn: '{user} says: {text}',
     ttsViewerVoice: true,
     ttsEnabled: true,
+    ttsReview: 'off',
+    telegramEnabled: false,
+    telegramToken: '',
+    telegramChatId: '',
+    panelTheme: 'amethyst',
+    counterStyle: 'dark',
+    counterScale: 100,
     rewardsOnlyLive: false,
     autoShoutout: false,
   };
@@ -270,6 +288,26 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (list.some((f) => !(OVERLAY_FIELDS as readonly string[]).includes(f))) throw new Error('Неизвестный показатель overlay статистики');
           out[k] = [...new Set(list)].join(','); break;
         }
+        case 'counterScale': num(k, 50, 300); break;
+        case 'counterStyle':
+          if (!['dark', 'light', 'clear', 'twitch'].includes(String(patch[k]))) throw new Error('Неверный стиль счётчиков');
+          out[k] = patch[k]; break;
+        case 'panelTheme':
+          if (!['amethyst', 'midnight', 'graphite'].includes(String(patch[k]))) throw new Error('Неверная палитра панели');
+          out[k] = patch[k]; break;
+        case 'ttsReview':
+          if (!['off', 'new', 'all'].includes(String(patch[k]))) throw new Error('Неверный режим проверки текста');
+          out[k] = patch[k]; break;
+        case 'telegramToken': {
+          const v = String(patch[k] ?? '').trim();
+          if (v && !/^\d{5,15}:[A-Za-z0-9_-]{30,60}$/.test(v)) throw new Error('Токен бота Telegram выглядит неверно: он похож на 123456789:AAH… — скопируйте его из сообщения @BotFather целиком');
+          out[k] = v; break;
+        }
+        case 'telegramChatId': {
+          const v = String(patch[k] ?? '').trim();
+          if (v && !/^-?\d{1,20}$/.test(v) && !/^@[A-Za-z][A-Za-z0-9_]{3,31}$/.test(v)) throw new Error('Чат Telegram: число (например, 123456789) или @имя_канала');
+          out[k] = v; break;
+        }
         case 'statsOverlayLayout':
           if (patch[k] !== 'row' && patch[k] !== 'column') throw new Error('Неверное расположение overlay статистики');
           out[k] = patch[k]; break;
@@ -284,7 +322,7 @@ export function validateSettingsPatch(patch: Record<string, unknown>): { ok: Par
           if (!allowed.includes(String(patch[k]))) throw new Error('Неверное положение overlay');
           out[k] = patch[k]; break;
         }
-        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck': case 'statsOverlayLabels': case 'ttsFilter': case 'rewardsOnlyLive': case 'autoShoutout': case 'ttsViewerVoice': case 'ttsEnabled':
+        case 'allowManageRewards': case 'showCaption': case 'launchObsWithBot': case 'recoverMissed': case 'manageRedemptionStatus': case 'audioOnly': case 'autoUpdateCheck': case 'statsOverlayLabels': case 'ttsFilter': case 'rewardsOnlyLive': case 'autoShoutout': case 'ttsViewerVoice': case 'ttsEnabled': case 'telegramEnabled':
           out[k] = Boolean(patch[k]); break;
         case 'clientId': {
           const v = String(patch[k] ?? '').trim();

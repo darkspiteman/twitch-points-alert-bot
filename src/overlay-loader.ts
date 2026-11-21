@@ -25,16 +25,18 @@ const LOADER_TEXT = {
 };
 
 /** Что открывает загрузчик: overlay оповещений, док статистики (текст ожидания виден и в OBS) или overlay статистики. */
-export type LoaderKind = 'overlay' | 'stats-dock' | 'stats-overlay';
-const LOADER_TARGET: Record<LoaderKind, string> = { overlay: '/overlay?via=file', 'stats-dock': '/stats/dock?via=file', 'stats-overlay': '/stats/overlay?via=file' };
+export type LoaderKind = 'overlay' | 'stats-dock' | 'stats-overlay' | 'counter';
+const LOADER_TARGET: Record<LoaderKind, string> = { overlay: '/overlay?via=file', 'stats-dock': '/stats/dock?via=file', 'stats-overlay': '/stats/overlay?via=file', counter: '/stats/counter?via=file' };
 const LOADER_TITLE: Record<LoaderKind, { ru: string; en: string }> = {
   overlay: { ru: LOADER_TEXT.ru.title, en: LOADER_TEXT.en.title },
   'stats-dock': { ru: 'Twitch Alert Bot — загрузчик панели статистики', en: 'Twitch Alert Bot — stats dock loader' },
   'stats-overlay': { ru: 'Twitch Alert Bot — загрузчик overlay статистики', en: 'Twitch Alert Bot — stats overlay loader' },
+  counter: { ru: 'Twitch Alert Bot — загрузчик счётчиков', en: 'Twitch Alert Bot — counters loader' },
 };
 export const STATS_DOCK_FILE = 'stats-dock.html';
 export const STATS_OVERLAY_FILE = 'stats-overlay.html';
-export interface StatsLoaders { dock: string; overlay: string }
+export const COUNTER_FILE = 'counter-overlay.html';
+export interface StatsLoaders { dock: string; overlay: string; counter: string }
 
 export function loaderHtml(port: number, lang: 'ru' | 'en' = 'ru', kind: LoaderKind = 'overlay'): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`Неверный порт: ${port}`);
@@ -124,6 +126,7 @@ export function writeStatsLoaders(dir: string, port: number, lang: 'ru' | 'en' =
   return {
     dock: writeLoader(dir, port, lang, 'stats-dock', STATS_DOCK_FILE),
     overlay: writeLoader(dir, port, lang, 'stats-overlay', STATS_OVERLAY_FILE),
+    counter: writeLoader(dir, port, lang, 'counter', COUNTER_FILE),
   };
 }
 

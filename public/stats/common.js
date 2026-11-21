@@ -12,7 +12,7 @@
       r_reconnecting: 'OBS переподключается к Twitch', r_dropped: 'Теряются кадры — не хватает скорости интернета', r_bitrate_low: 'Битрейт упал', r_render: 'OBS не успевает рисовать кадры (нагрузка на видеокарту)', r_cpu: 'Процессор загружен больше 90 %',
       connecting: 'Подключение к боту…', lost: 'Нет связи с ботом — переподключение…',
       obs_off: 'OBS: подключение выключено', obs_connecting: 'OBS не найден — запустите OBS', obs_disabled: 'В OBS выключен сервер WebSocket: «Сервис» → «Настройки сервера WebSocket» → «Включить сервер WebSocket»',
-      obs_auth_failed: 'OBS не принял пароль WebSocket — проверьте его в панели бота («Статистика»)', obs_error: 'Ошибка подключения к OBS', obs_streamlabs: 'Битрейт и кадры доступны только в OBS Studio',
+      obs_auth_failed: 'OBS не принял пароль WebSocket — проверьте его в панели бота («OBS / Streamlabs»)', obs_error: 'Ошибка подключения к OBS', obs_streamlabs: 'Битрейт и кадры доступны только в OBS Studio',
       s_markers: 'ставить метки', s_shoutouts: 'делать шаутаут', ttsOn: 'Озвучка текста включена — нажмите, чтобы выключить (например, если отходите)', ttsOff: 'Озвучка текста выключена — нажмите, чтобы включить', so: '📣 Шаутаут', soTitle: 'Показать канал рейдера в вашем чате (карточка с кнопкой «Отслеживать»)', soDone: 'Шаутаут сделан', notLogged: 'Бот не вошёл в Twitch — откройте панель бота', scopes: 'Чтобы видеть {0}, войдите в Twitch заново в панели бота («Настройки» → «Войти заново»)',
       s_followers: 'события фолловеров', s_subs: 'подписчиков', s_chatters: 'кто в чате',
       feed: 'События', chat: 'Кто в чате', noFeed: 'Пока тихо', noChat: 'В чате никого (кроме вас и ботов)', newMark: 'новый',
@@ -27,9 +27,13 @@
       trackNote: 'Бот только начал запоминать зрителей: отметка «впервые» появится со следующего стрима.',
       sumTitle: 'Итоги прошлого стрима', sumViewers: 'Зрители в среднем', sumResubs: 'продлений {0}', sumGifts: 'подарено {0}', sumNew: 'впервые {0}',
       sumRaids: 'Рейды', sumRedeems: 'Награды за баллы', sumFollowerNames: 'Новые фолловеры', sumNewChatterNames: 'Впервые в чате', sumSubNames: 'Подписки',
-      sumRaidNames: 'Рейды', andMore: 'и ещё {0}', sumHint: 'Все прошлые стримы — в панели бота, раздел «Статистика».',
+      sumRaidNames: 'Рейды', andMore: 'и ещё {0}', sumHint: 'Все прошлые стримы — в панели бота, раздел «Стрим» → «История».',
       marker: '📍 Метка', markerTitle: 'Поставить метку в записи трансляции — потом по ней удобно найти момент для нарезки', markerOk: 'Метка поставлена: {0}', f_marker: 'Метка в записи',
       sumTopRewards: 'Чаще всего брали', sumTopUsers: 'Больше всех потратили баллов', sumMarkers: 'Метки',
+      heldTitle: 'Текст ждёт проверки', heldVoice: 'Озвучить', heldVoiceTitle: 'Озвучить этот текст', heldMuteTitle: 'Показать оповещение без озвучки текста',
+      heldRejectTitle: 'Отклонить: оповещения не будет, баллы вернутся зрителю (у наград бота)',
+      sec_counters: 'Счётчики', counters: 'Счётчики', countersEmpty: 'Добавьте счётчик в панели бота: «Стрим» → «Счётчики».', counterHidden: 'Не показывается на экране стрима',
+      counterMinus: 'Минус 1', counterPlus: 'Плюс 1',
     },
     en: {
       session: 'Session', viewers: 'Viewers', chatters: 'In chat', followers: 'Followers', followersSession: 'New followers',
@@ -39,7 +43,7 @@
       r_reconnecting: 'OBS is reconnecting to Twitch', r_dropped: 'Frames are being dropped — internet too slow', r_bitrate_low: 'Bitrate dropped', r_render: 'OBS can’t render frames in time (GPU load)', r_cpu: 'CPU load is above 90%',
       connecting: 'Connecting to the bot…', lost: 'No connection to the bot — reconnecting…',
       obs_off: 'OBS: connection is off', obs_connecting: 'OBS not found — start OBS', obs_disabled: 'The WebSocket server is off in OBS: “Tools” → “WebSocket Server Settings” → “Enable WebSocket server”',
-      obs_auth_failed: 'OBS rejected the WebSocket password — check it in the bot panel (“Stats”)', obs_error: 'OBS connection error', obs_streamlabs: 'Bitrate and frames are available only in OBS Studio',
+      obs_auth_failed: 'OBS rejected the WebSocket password — check it in the bot panel (“OBS / Streamlabs”)', obs_error: 'OBS connection error', obs_streamlabs: 'Bitrate and frames are available only in OBS Studio',
       s_markers: 'add markers', s_shoutouts: 'send shoutouts', ttsOn: 'Text-to-speech is on — click to turn it off (e.g. when you step away)', ttsOff: 'Text-to-speech is off — click to turn it on', so: '📣 Shoutout', soTitle: 'Show the raider’s channel in your chat (a card with a Follow button)', soDone: 'Shoutout sent', notLogged: 'The bot isn’t signed in to Twitch — open the bot panel', scopes: 'To see {0}, sign in to Twitch again in the bot panel (“Settings” → “Sign in again”)',
       s_followers: 'follow events', s_subs: 'subscribers', s_chatters: 'who’s in chat',
       feed: 'Events', chat: 'In chat', noFeed: 'Quiet so far', noChat: 'Nobody in chat (except you and bots)', newMark: 'new',
@@ -54,9 +58,13 @@
       trackNote: 'The bot has just started remembering viewers: the “first time” mark will appear from the next stream.',
       sumTitle: 'Last stream summary', sumViewers: 'Average viewers', sumResubs: '{0} resubs', sumGifts: '{0} gifted', sumNew: '{0} first-time',
       sumRaids: 'Raids', sumRedeems: 'Channel point rewards', sumFollowerNames: 'New followers', sumNewChatterNames: 'First time in chat', sumSubNames: 'Subs',
-      sumRaidNames: 'Raids', andMore: 'and {0} more', sumHint: 'All past streams are in the bot panel, “Stats” section.',
+      sumRaidNames: 'Raids', andMore: 'and {0} more', sumHint: 'All past streams are in the bot panel, “Stream” → “History”.',
       marker: '📍 Marker', markerTitle: 'Add a stream marker — later it helps you find the moment for clips', markerOk: 'Marker added: {0}', f_marker: 'Stream marker',
       sumTopRewards: 'Most redeemed', sumTopUsers: 'Spent the most points', sumMarkers: 'Markers',
+      heldTitle: 'Text awaiting review', heldVoice: 'Read', heldVoiceTitle: 'Read this text aloud', heldMuteTitle: 'Show the alert without reading the text',
+      heldRejectTitle: 'Reject: no alert, the viewer gets the points back (bot rewards)',
+      sec_counters: 'Counters', counters: 'Counters', countersEmpty: 'Add a counter in the bot panel: “Stream” → “Counters”.', counterHidden: 'Not shown on stream',
+      counterMinus: 'Minus 1', counterPlus: 'Plus 1',
     },
   };
 
@@ -157,13 +165,16 @@
   }
 
   /** Подключение к /ws/stats с переподключением. onData(payload), onConn(true/false). */
-  function connect(onData, onConn) {
+  function connect(onData, onConn, kind) {
+    // 2.0.0: вид страницы — чтобы панель показала, что док / overlay / счётчики на связи; предпросмотр в панели не считается.
+    var sp = new URLSearchParams(location.search);
+    var query = kind ? '?kind=' + kind + (sp.get('embed') === '1' || sp.get('preview') === '1' ? '&preview=1' : '') : '';
     var ws = null;
     var delay = 1000;
     var lastAt = 0;
     var seenVersion = '';
     function open() {
-      try { ws = new WebSocket('ws://' + location.host + '/ws/stats'); } catch (e) { retry(); return; }
+      try { ws = new WebSocket('ws://' + location.host + '/ws/stats' + query); } catch (e) { retry(); return; }
       ws.onopen = function () { delay = 1000; lastAt = Date.now(); onConn(true); };
       ws.onmessage = function (ev) {
         lastAt = Date.now();

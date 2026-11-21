@@ -7,6 +7,7 @@ import { App } from './app.ts';
 import { createServer } from './server/http.ts';
 import { Db } from './db.ts';
 import { migrateLegacyData } from './migrate.ts';
+import { applyPendingRestore } from './backup.ts';
 
 const paths = makePaths();
 const logger = new Logger({ logDir: paths.logDir, minLevel: process.env.TAB_DEBUG ? 'debug' : 'info' });
@@ -19,6 +20,12 @@ if (!process.env.TAB_DATA_DIR) {
     if (r) log.info(`Данные перенесены в ${paths.dataDir} из ${r.from.dir} (файлов: ${r.files}, наград: ${r.from.rewards}, медиа: ${r.from.media}, Client ID: ${r.from.clientId ? 'есть' : 'нет'}, вход: ${r.from.hasTokens ? 'есть' : 'нет'})`);
   } catch (e) { log.error('Не удалось перенести данные из прежней папки', e); }
 }
+
+// Восстановление из резервной копии (подготовлено в панели): до открытия базы.
+try {
+  const r = applyPendingRestore(paths.dataDir, paths.dbFile, paths.mediaDir);
+  if (r) log.info(`Данные восстановлены из резервной копии (версия ${r.version}, медиафайлов: ${r.mediaFiles}); прежние — в restore-previous`);
+} catch (e) { log.error('Не удалось восстановить данные из резервной копии — бот запускается с прежними данными', e); }
 
 /** Проверка, жив ли процесс с указанным PID. */
 function pidAlive(pid: number): boolean {
@@ -67,7 +74,7 @@ async function main(): Promise<void> {
 
   log.info(`Запуск Twitch Alert Bot ${APP_VERSION}, данные: ${paths.dataDir}`);
   const app = new App({ paths, logger, store: new DpapiStore(paths.tokenFile), protector: new DpapiProtector(), port });
-  const server = createServer(app, { onShutdown: () => void shutdown('panel') });
+  const server = createServer(app, { onShutdown: () => void shutdown('panel'), onRestart: () => void shutdown('restore', 4) });
   // После установки обновления — выход с кодом 4: лаунчер сразу запускает новую версию.
   app.updater.onRestart = () => void shutdown('update', 4);
   try { fs.rmSync(path.join(APP_ROOT, 'TwitchAlertBot.exe.old'), { force: true }); } catch { /* старый лаунчер ещё работает */ }

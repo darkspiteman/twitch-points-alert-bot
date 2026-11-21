@@ -33,6 +33,57 @@
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
   function $(id) { return document.getElementById(id); }
 
+  // ---------------- элементы оформления (2.0.0) ----------------
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  /** Значок из набора в index.html (<symbol id="i-…">). */
+  function icon(name, cls) {
+    var s = document.createElementNS(SVG_NS, 'svg');
+    s.setAttribute('class', 'ic' + (cls ? ' ' + cls : ''));
+    s.setAttribute('aria-hidden', 'true');
+    var u = document.createElementNS(SVG_NS, 'use');
+    u.setAttribute('href', '#i-' + name);
+    s.appendChild(u);
+    return s;
+  }
+  /** Кнопка со значком: btn('play', 'Тест', { class: 'small', onclick }). */
+  function btn(ic, text, attrs) {
+    return h('button', attrs || null, ic ? icon(ic, ic === 'play' ? 'f' : '') : null, text);
+  }
+  /** Заголовок страницы: название, пояснение, кнопки справа. */
+  function pageHead(title, sub, actions, extra) {
+    return h('header', { class: 'ph' },
+      h('div', null, h('h1', null, title, extra || null), sub ? h('p', { class: 'ph-sub', text: sub }) : null),
+      actions && actions.length ? h('div', { class: 'ph-act' }, actions) : null);
+  }
+  /** Вкладки страницы: list = [[id, текст, счётчик?]]. */
+  function pageTabs(list, cur, pick) {
+    return h('div', { class: 'pagetabs', role: 'tablist' }, list.map(function (t) {
+      return h('button', { role: 'tab', class: t[0] === cur ? 'active' : '', 'aria-selected': t[0] === cur ? 'true' : 'false', onclick: function () { pick(t[0]); } },
+        t[1], t[2] !== undefined && t[2] !== null ? h('span', { class: 'cnt', text: String(t[2]) }) : null);
+    }));
+  }
+  /** Выключатель (checkbox в виде тумблера). */
+  function toggle(checked, onchange, label) {
+    var inp = h('input', { type: 'checkbox', class: 'toggle', checked: checked, 'aria-label': label || null });
+    inp.addEventListener('change', function () { onchange(inp.checked, inp); });
+    return inp;
+  }
+  /** Строка настройки: название и пояснение слева, выключатель справа. */
+  function opt(title, hint, control) {
+    return h('div', { class: 'opt' }, h('div', null, h('div', { class: 'opt-t', text: title }), hint ? h('div', { class: 'hint', text: hint }) : null), control);
+  }
+  function settingToggle(title, key, hint) {
+    return opt(title, hint, toggle(!!S.settings[key], function (v) { saveSetting(key, v); }, title));
+  }
+  /** Перейти на страницу (и вкладку). */
+  function goTo(p, tab) {
+    if (tab) TABS[p] = tab;
+    if (location.hash === '#' + p) go(); else location.hash = p;
+  }
+  function goLink(text, p, tab) {
+    return h('a', { href: '#' + p, text: text, onclick: function (e) { e.preventDefault(); goTo(p, tab); } });
+  }
+
   function toast(text, kind) {
     var t = h('div', { class: 'toast ' + (kind || '') , text: text });
     $('toasts').appendChild(t);
@@ -67,7 +118,11 @@
 
   // ---------------- состояние ----------------
   var S = null; // полный state с сервера
-  var page = 'home';
+  var page = 'pult';
+  // Открытые вкладки страниц (2.0.0).
+  var TABS = { stream: 'now', media: 'files', settings: 'main', log: 'events' };
+  // Старые адреса страниц (закладки, ссылки из прошлых версий).
+  var PAGE_ALIASES = { home: ['pult'], stats: ['stream'], find: ['media', 'find'] };
   var ws = null;
   var probed = {};
   var bootVersion = '';
@@ -79,6 +134,7 @@
       bootVersion = s.status.version;
       S = s;
       $('conn-banner').hidden = true;
+      applyPalette();
       applyLanguage();
       render();
       renderUpdateUi();
@@ -98,11 +154,12 @@
     ws.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (!S) return;
-      if (m.type === 'status') { S.status = m.status; renderSide(); if (page === 'home') renderHomeTop(); if (page === 'settings') renderAuthBox(); }
-      else if (m.type === 'queue') { S.queue = m.queue; if (page === 'home') renderQueue(); }
-      else if (m.type === 'event') { S.events.unshift(m.event); S.events = S.events.slice(0, 200); if (page === 'home') renderEventsMini(); if (page === 'log') renderLog(); }
+      if (m.type === 'status') { S.status = m.status; renderSide(); if (page === 'pult') renderPultTop(); if (page === 'settings') renderAuthBox(); if (page === 'obs') renderObsStates(); }
+      else if (m.type === 'queue') { S.queue = m.queue; renderSide(); if (page === 'pult') renderQueue(); }
+      else if (m.type === 'event') { S.events.unshift(m.event); S.events = S.events.slice(0, 200); if (page === 'pult') renderAttention(); if (page === 'log' && TABS.log === 'events') renderLog(); }
+      else if (m.type === 'invalidate' && m.what === 'counters') { if (page === 'stream' && TABS.stream === 'counters') renderCountersCard(); }
       else if (m.type === 'invalidate') reloadSoon();
-      else if (m.type === 'update') { S.update = m.update; renderUpdateUi(); if (page === 'support') renderSupport(); }
+      else if (m.type === 'update') { S.update = m.update; renderUpdateUi(); if (page === 'settings' && TABS.settings === 'system') renderSettings(); }
     };
     ws.onclose = function () {
       $('conn-banner').hidden = false;
@@ -138,7 +195,7 @@
   }
 
   // ---------------- язык ----------------
-  var NAV = { home: 'Главная', rewards: 'Награды', media: 'Медиа', find: 'Найти медиа', stats: 'Статистика', settings: 'Настройки', log: 'Журнал', help: 'Помощь', support: '❤ Поддержать автора' };
+  var NAV = { sub: 'оповещения о наградах', 'g-live': 'Во время стрима', pult: 'Пульт', stream: 'Стрим', 'g-content': 'Контент', rewards: 'Награды', media: 'Медиатека', voice: 'Озвучка', 'g-connect': 'Подключение', 'g-system': 'Система', settings: 'Настройки', log: 'Журнал', help: 'Помощь', support: 'Поддержать автора', 'g-conn': 'Подключения' };
   var langAutoSaved = false;
 
   /** Язык из настроек бота. Не выбран (новая установка) — подбираем по языку браузера и сохраняем выбор. */
@@ -158,7 +215,7 @@
   /** Тексты из index.html и переключатель языка в боковой панели. */
   function renderStatic() {
     document.documentElement.lang = I18N.lang();
-    document.querySelectorAll('nav a').forEach(function (a) { if (NAV[a.dataset.page]) a.textContent = T(NAV[a.dataset.page]); });
+    document.querySelectorAll('[data-nav]').forEach(function (el) { if (NAV[el.dataset.nav]) el.textContent = T(NAV[el.dataset.nav]); });
     var box = $('lang-switch');
     if (!box) return;
     clear(box);
@@ -180,10 +237,14 @@
 
   // ---------------- навигация ----------------
   function go() {
-    page = (location.hash || '#home').slice(1);
-    if (!$('page-' + page)) page = 'home';
+    var prev = page;
+    page = (location.hash || '#pult').slice(1);
+    var alias = PAGE_ALIASES[page];
+    if (alias) { if (alias[1]) TABS[alias[0]] = alias[1]; history.replaceState(null, '', '#' + alias[0]); page = alias[0]; }
+    if (!$('page-' + page)) page = 'pult';
     document.querySelectorAll('nav a').forEach(function (a) { a.classList.toggle('active', a.dataset.page === page); });
     document.querySelectorAll('.page').forEach(function (p) { p.hidden = p.id !== 'page-' + page; });
+    if (prev !== page) window.scrollTo(0, 0);
     render();
   }
   window.addEventListener('hashchange', go);
@@ -191,16 +252,27 @@
   function render() {
     if (!S) return;
     renderSide();
-    if (page === 'home') renderHome();
+    if (page === 'pult') renderPult();
+    else if (page === 'stream') renderStream();
     else if (page === 'rewards') renderRewards();
     else if (page === 'media') renderMedia();
-    else if (page === 'find') renderFind();
-    else if (page === 'support') renderSupport();
-    else if (page === 'stats') renderStats();
+    else if (page === 'voice') renderVoice();
+    else if (page === 'obs') renderObs();
     else if (page === 'settings') renderSettings();
     else if (page === 'log') renderLog();
     else if (page === 'help') renderHelp();
+    else if (page === 'support') renderSupport();
   }
+
+  /** Палитра панели — из настроек бота (2.0.0). */
+  function applyPalette(saved) {
+    var p = saved || (S && S.settings.panelTheme) || 'amethyst';
+    if (p !== 'amethyst') document.documentElement.setAttribute('data-palette', p);
+    else document.documentElement.removeAttribute('data-palette');
+    // Запоминаем в браузере, чтобы при открытии панели не мелькала палитра по умолчанию.
+    if (!saved) { try { localStorage.setItem('tab-palette', p); } catch (e) { /* */ } }
+  }
+  try { var savedPalette = localStorage.getItem('tab-palette'); if (savedPalette) applyPalette(savedPalette); } catch (e) { /* */ }
 
   // ---------------- статусы ----------------
   function twitchView(st) {
@@ -287,92 +359,99 @@
   function renderSide() {
     var el = clear($('side-status'));
     var st = S.status;
-    [['Twitch', twitchView(st)], ['EventSub', eventsubView(st)], ['Overlay', overlayView(st)]].forEach(function (x) {
-      el.appendChild(h('div', null, h('span', { class: 'dot ' + x[1].cls }), x[0] + ': ' + x[1].text));
-    });
-    if (st.mode === 'observe') el.appendChild(h('div', null, h('span', { class: 'dot warn' }), T('Режим наблюдения')));
+    var row = function (name, v, title, p, tab) {
+      return h('button', { class: 'conn-btn', title: title, onclick: function () { goTo(p, tab); } },
+        h('span', { class: 'dot ' + v.cls }), name + ' ', h('b', { text: v.text }), icon('right', 'go'));
+    };
+    el.appendChild(row('Twitch', twitchView(st), T('Вход в Twitch — «Настройки» → «Twitch»'), 'settings', 'twitch'));
+    el.appendChild(row('EventSub', eventsubView(st), T('События наград от Twitch — «Пульт»'), 'pult'));
+    el.appendChild(row('Overlay', overlayView(st), T('Источник оповещений — «OBS / Streamlabs»'), 'obs'));
+    if (st.mode === 'observe') el.appendChild(row('', { cls: 'warn', text: T('Режим наблюдения') }, T('Оповещения не воспроизводятся — «Настройки» → «Основное»'), 'settings', 'main'));
+    var held = S.queue && S.queue.held ? S.queue.held.length : 0;
+    var badge = $('nav-held');
+    badge.hidden = !held;
+    badge.textContent = String(held);
+    badge.title = T('Текст ждёт проверки ({0})', [held]);
+    $('side-ver').textContent = 'v' + st.version;
   }
 
-  // ---------------- Главная ----------------
-  function statCard(label, v, actions) {
-    return h('div', { class: 'card stat' },
-      h('div', { class: 'label', text: label }),
+  // ---------------- Пульт ----------------
+  /** Плитка состояния. opts: control — элемент в строке названия, goto — [страница, вкладка]. */
+  function statCard(label, v, actions, opts) {
+    opts = opts || {};
+    var card = h('div', { class: 'card stat' + (opts.goto ? ' link' : '') },
+      h('div', { class: 'label' }, h('span', { text: label }), opts.control || (opts.goto ? icon('right') : null)),
       h('div', { class: 'value' }, h('span', { class: 'dot ' + v.cls }), v.text),
       h('div', { class: 'detail', text: v.detail || '' }),
       actions && actions.length ? h('div', { class: 'actions' }, actions) : null);
+    if (opts.goto) card.addEventListener('click', function (e) { if (!e.target.closest('button, input, a')) goTo(opts.goto[0], opts.goto[1]); });
+    return card;
   }
 
-  function renderHomeTop() {
+  function renderPultTop() {
     var root = $('home-top');
     if (!root) return;
     clear(root);
     var st = S.status;
 
-    // Мастер первоначальной настройки
+    // Первоначальная настройка: исчезает, когда всё готово.
     var steps = [
-      { done: !!S.settings.clientId, text: T('Укажите Client ID приложения Twitch'), go: '#settings' },
-      { done: st.auth.status === 'ok', text: T('Войдите через Twitch'), go: '#settings' },
-      { done: st.overlays.some(function (o) { return o.isObs; }), text: T('Добавьте Browser Source в {0}', [appName()]), go: '#help' },
-      { done: S.rewards.some(function (r) { return r.bot_enabled && (r.media_id || r.sound_id || r.video_id); }), text: T('Назначьте медиафайлы наградам и включите их'), go: '#rewards' },
+      { done: !!S.settings.clientId, text: T('Укажите Client ID приложения Twitch'), go: ['settings', 'twitch'] },
+      { done: st.auth.status === 'ok', text: T('Войдите через Twitch'), go: ['settings', 'twitch'] },
+      { done: st.overlays.some(function (o) { return o.isObs; }), text: T('Добавьте Browser Source в {0}', [appName()]), go: ['obs'] },
+      { done: S.rewards.some(function (r) { return r.bot_enabled && (r.media_id || r.sound_id || r.video_id); }), text: T('Назначьте медиафайлы наградам и включите их'), go: ['rewards'] },
     ];
-    if (steps.some(function (s) { return !s.done; })) {
-      root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Первоначальная настройка') }),
-        h('ol', { class: 'steps' }, steps.map(function (s) {
-          return h('li', { class: s.done ? 'done' : '' }, h('span', null, s.text, ' ', s.done ? null : h('a', { href: s.go, text: T('Перейти →') })));
-        }))));
+    var done = steps.filter(function (s) { return s.done; }).length;
+    if (done < steps.length) {
+      var ring = h('div', { class: 'ring' }, h('span', { text: done + '/' + steps.length }));
+      ring.style.setProperty('--p', Math.round(done / steps.length * 100) + '%');
+      root.appendChild(h('div', { class: 'card setup' }, ring,
+        h('div', null, h('h2', { style: 'margin:0', text: T('Первоначальная настройка') }),
+          h('p', { class: 'small muted', style: 'margin:4px 0 0', text: T('Блок исчезнет сам, когда все шаги будут выполнены.') }),
+          h('ol', { class: 'steps' }, steps.map(function (s) {
+            return h('li', { class: s.done ? 'done' : '' }, icon(s.done ? 'check' : 'circle'), h('span', { text: s.text }), s.done ? null : goLink(T('Перейти →'), s.go[0], s.go[1]));
+          })))));
     }
-    if (streamlabsDetected(st)) root.appendChild(switchToStreamlabsBox());
-    if (loaderTipNeeded(st)) root.appendChild(loaderTipBox());
+    var tips = [];
+    if (streamlabsDetected(st)) tips.push(switchToStreamlabsBox());
+    if (loaderTipNeeded(st)) tips.push(loaderTipBox());
+    if (tips.length) root.appendChild(h('div', { class: 'tips' }, tips));
 
     var tw = twitchView(st);
-    var twActions = st.auth.status === 'ok' ? [] : [h('button', { class: 'primary small', text: T('Войти'), onclick: function () { location.hash = '#settings'; } })];
-    var es = eventsubView(st);
-    var esActions = st.auth.status === 'ok' ? [h('button', { class: 'small', text: T('Переподключить'), onclick: function () { act(post('/api/eventsub/reconnect'), T('Переподключение запущено')); } })] : [];
-    var modeCard = h('div', { class: 'card stat' },
-      h('div', { class: 'label', text: T('Режим') }),
-      h('div', { class: 'value' }, h('span', { class: 'dot ' + (st.mode === 'active' ? 'ok' : 'warn') }), st.mode === 'active' ? T('Активный') : T('Наблюдение')),
-      h('div', { class: 'detail', text: st.mode === 'active' ? T('Оповещения воспроизводятся') : T('События записываются, но не воспроизводятся') }),
-      h('div', { class: 'actions' }, h('button', {
-        class: 'small', text: st.mode === 'active' ? T('Включить наблюдение') : T('Включить воспроизведение'),
-        onclick: function () { act(post('/api/settings', { mode: st.mode === 'active' ? 'observe' : 'active' })).then(load); },
-      })));
+    var twActions = st.auth.status === 'ok' ? [] : [h('button', { class: 'primary small', text: T('Войти'), onclick: function () { goTo('settings', 'twitch'); } })];
+    var reconnect = st.auth.status === 'ok' ? h('button', { class: 'ghost small sq', title: T('Переподключить'), 'aria-label': T('Переподключить'), onclick: function () { act(post('/api/eventsub/reconnect'), T('Переподключение запущено')); } }, icon('refresh')) : null;
+    var active = st.mode === 'active';
     var audioOnly = !!S.settings.audioOnly;
-    var videoCard = h('div', { class: 'card stat' },
-      h('div', { class: 'label', text: T('Видео') }),
-      h('div', { class: 'value' }, h('span', { class: 'dot ' + (audioOnly ? 'warn' : 'ok') }), audioOnly ? T('Только звук') : T('С видео')),
-      h('div', { class: 'detail', text: audioOnly ? T('Видео выключено для всех наград') : T('Как настроено у каждой награды') }),
-      h('div', { class: 'actions' }, h('button', {
-        class: 'small', text: audioOnly ? T('Включить видео') : T('Только звук для всех'),
-        onclick: function () { act(post('/api/settings', { audioOnly: !audioOnly }), audioOnly ? T('Видео включено') : T('Теперь все награды — только звук')).then(load); },
-      })));
-    root.appendChild(h('div', { class: 'grid cols-4' },
-      statCard('Twitch', tw, twActions), statCard('EventSub', es, esActions), statCard('Overlay (' + appShort() + ')', overlayView(st)), modeCard, videoCard));
-
+    var modeToggle = toggle(active, function (v) { act(post('/api/settings', { mode: v ? 'active' : 'observe' })).then(load, load); }, T('Воспроизводить оповещения'));
+    var videoToggle = toggle(!audioOnly, function (v) { act(post('/api/settings', { audioOnly: !v }), v ? T('Видео включено') : T('Теперь все награды — только звук')).then(load, load); }, T('Показывать видео'));
+    root.appendChild(h('div', { class: 'tiles' },
+      statCard('Twitch', tw, twActions, { goto: ['settings', 'twitch'] }),
+      statCard(T('События наград'), eventsubView(st), null, { control: reconnect }),
+      statCard('Overlay (' + appShort() + ')', overlayView(st), null, { goto: ['obs'] }),
+      statCard(T('Режим'), { cls: active ? 'ok' : 'warn', text: active ? T('Активный') : T('Наблюдение'), detail: active ? T('Оповещения воспроизводятся') : T('События записываются, но не воспроизводятся') }, null, { control: modeToggle }),
+      statCard(T('Видео'), { cls: audioOnly ? 'warn' : 'ok', text: audioOnly ? T('Только звук') : T('С видео'), detail: audioOnly ? T('Видео выключено для всех наград') : T('Как настроено у каждой награды') }, null, { control: videoToggle })));
   }
 
-  function renderHome() {
-    var root = clear($('page-home'));
-    root.appendChild(h('h1', { text: T('Главная') }));
+  function renderPult() {
+    var root = clear($('page-pult'));
+    root.appendChild(pageHead(T('Пульт'), T('Всё, что нужно во время эфира: очередь, проверка текста, тест наград.'),
+      [btn('play', T('Тестовое оповещение'), { class: 'primary', onclick: function () { act(post('/api/test'), T('Тест добавлен в очередь')); } })]));
     root.appendChild(h('div', { id: 'home-top' }));
-    renderHomeTop();
+    renderPultTop();
 
-    var testRow = h('div', { class: 'row' });
-    var sel = h('select', { class: 'grow' }, h('option', { value: '', text: T('— выберите награду —') }),
+    var sel = h('select', { class: 'grow', 'aria-label': T('— выберите награду —') }, h('option', { value: '', text: T('— выберите награду —') }),
       S.rewards.filter(function (r) { return r.media_id || r.sound_id || r.video_id; }).map(function (r) { return h('option', { value: r.id, text: r.title + ' (' + r.cost + ')' }); }));
-    testRow.appendChild(h('button', { class: 'primary', text: T('Тестовое оповещение'), onclick: function () { act(post('/api/test'), T('Тест добавлен в очередь')); } }));
-    testRow.appendChild(sel);
-    testRow.appendChild(h('button', { text: T('Тест награды'), onclick: function () {
-      if (!sel.value) return toast(T('Выберите награду'), 'bad');
-      act(post('/api/rewards/' + encodeURIComponent(sel.value) + '/test'), T('Тест добавлен в очередь'));
-    } }));
-    root.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: T('Тестирование') }), h('span', { class: 'muted small', text: T('Баллы канала не списываются') })), testRow));
-
-    root.appendChild(h('div', { class: 'grid cols-2' },
-      h('div', { class: 'card', id: 'queue-card' }), h('div', { class: 'card', id: 'events-card' })));
+    var testCard = h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', { text: T('Проверить награду') }), h('span', { class: 'muted small', text: T('Баллы канала не списываются') })),
+      h('div', { class: 'row' }, sel, btn('play', T('Тест награды'), { onclick: function () {
+        if (!sel.value) return toast(T('Выберите награду'), 'bad');
+        act(post('/api/rewards/' + encodeURIComponent(sel.value) + '/test'), T('Тест добавлен в очередь'));
+      } })));
+    root.appendChild(h('div', { class: 'grid g-main' },
+      h('div', { class: 'stack' }, h('div', { class: 'card', id: 'queue-card' })),
+      h('div', { class: 'stack' }, h('div', { class: 'attn', id: 'attn-box' }), testCard, renderRedemptionsCard(8))));
     renderQueue();
-    renderEventsMini();
-
-    root.appendChild(renderRedemptionsCard());
+    renderAttention();
   }
 
   function renderQueue() {
@@ -382,61 +461,95 @@
     var q = S.queue;
     card.appendChild(h('div', { class: 'card-head' }, h('h2', { text: T('Очередь ({0})', [q.items.length]) }),
       h('div', { class: 'row' },
-        h('button', { class: 'small', text: q.paused ? T('Продолжить') : T('Пауза'), onclick: function () { act(post(q.paused ? '/api/queue/resume' : '/api/queue/pause')); } }),
-        h('button', { class: 'small', text: T('Пропустить'), disabled: !q.current, onclick: function () { act(post('/api/queue/skip')); } }),
-        h('button', { class: 'small danger', text: T('Очистить'), disabled: !q.items.length, onclick: function () {
+        btn(q.paused ? 'play' : 'pause', q.paused ? T('Продолжить') : T('Пауза'), { class: 'small', onclick: function () { act(post(q.paused ? '/api/queue/resume' : '/api/queue/pause')); } }),
+        btn('skip', T('Пропустить'), { class: 'small', disabled: !q.current, onclick: function () { act(post('/api/queue/skip')); } }),
+        btn('trash', T('Очистить'), { class: 'small danger', disabled: !q.items.length, onclick: function () {
           if (confirm(T('Удалить из очереди все ожидающие оповещения?'))) act(post('/api/queue/clear'), T('Очередь очищена'));
         } }))));
-    if (q.paused) card.appendChild(h('div', { class: 'warnbox', text: T('Очередь на паузе — новые оповещения ждут.') }));
+    if (q.paused) card.appendChild(h('div', { class: 'warnbox', style: 'margin:0 0 12px', text: T('Очередь на паузе — новые оповещения ждут.') }));
+    // 1.9.0: текст зрителя ждёт проверки перед озвучкой.
+    if (q.held && q.held.length) {
+      var held = h('div', { class: 'held-box' }, h('div', { class: 'held-head' }, icon('alert'), T('Текст ждёт проверки ({0})', [q.held.length])));
+      q.held.forEach(function (it) {
+        var send = function (action, okText) { return function () { act(post('/api/queue/held/' + encodeURIComponent(it.id) + '/' + action), okText); }; };
+        held.appendChild(h('div', { class: 'held-item' },
+          h('div', { class: 'held-who' }, h('b', { text: it.userName }), ' · ' + it.rewardTitle),
+          h('div', { class: 'held-text', text: '«' + it.text + '»' }),
+          h('div', { class: 'row' },
+            btn('voice', T('Озвучить'), { class: 'small primary', onclick: send('voice', T('Текст будет озвучен')) }),
+            it.hasMedia ? btn('sound', T('Без озвучки'), { class: 'small', title: T('Показать оповещение без озвучки текста'), onclick: send('mute') }) : null,
+            btn('x', T('Отклонить'), { class: 'small danger', title: T('Оповещения не будет, баллы вернутся зрителю (у наград бота)'), onclick: send('reject', T('Отклонено')) }))));
+      });
+      card.appendChild(held);
+    }
+    if (q.current) card.appendChild(h('div', { class: 'now' }, h('div', { class: 'now-top' }, h('span', { class: 'badge ok', text: T('Играет') }),
+      h('span', { class: 'grow' }, h('b', { text: q.current.rewardTitle }), h('span', { class: 'muted', text: ' — ' + q.current.userName })))));
     var list = h('div', { class: 'list' });
-    if (q.current) list.appendChild(h('div', { class: 'list-item' }, h('span', { class: 'badge ok', text: T('Играет') }),
-      h('span', { class: 'grow', text: q.current.rewardTitle + ' — ' + q.current.userName })));
     q.items.forEach(function (it, i) {
-      list.appendChild(h('div', { class: 'list-item' }, h('span', { class: 'badge', text: '#' + (i + 1) }),
-        h('span', { class: 'grow', text: it.rewardTitle + ' — ' + it.userName }),
-        h('button', { class: 'small', text: '✕', title: T('Убрать'), onclick: function () { act(post('/api/queue/remove/' + encodeURIComponent(it.id))); } })));
+      list.appendChild(h('div', { class: 'list-item' }, h('span', { class: 'qn', text: '#' + (i + 1) }),
+        h('span', { class: 'grow' }, it.rewardTitle, h('span', { class: 'muted', text: ' — ' + it.userName })),
+        h('button', { class: 'ghost small sq', title: T('Убрать'), 'aria-label': T('Убрать'), onclick: function () { act(post('/api/queue/remove/' + encodeURIComponent(it.id))); } }, icon('x'))));
     });
     if (!q.current && !q.items.length) list.appendChild(h('div', { class: 'empty', text: T('Очередь пуста') }));
     card.appendChild(list);
   }
 
-  function levelBadge(l) { return h('span', { class: 'badge ' + (l === 'error' ? 'bad' : l === 'warn' ? 'warn' : ''), text: l === 'error' ? T('ошибка') : l === 'warn' ? T('внимание') : T('инфо') }); }
-
-  function renderEventsMini() {
-    var card = $('events-card');
-    if (!card) return;
-    clear(card);
-    card.appendChild(h('div', { class: 'card-head' }, h('h2', { text: T('Последние события') }), h('a', { href: '#log', text: T('Весь журнал') })));
-    var list = h('div', { class: 'list' });
-    S.events.slice(0, 8).forEach(function (e) {
-      list.appendChild(h('div', { class: 'list-item' }, levelBadge(e.level), h('span', { class: 'grow', text: e.message, title: e.message }), h('span', { class: 'muted small', text: fmtTime(e.ts) })));
+  /** Предупреждения и ошибки за последние 2 часа — подробности в «Журнале». */
+  function renderAttention() {
+    var box = $('attn-box');
+    if (!box) return;
+    clear(box);
+    var since = Date.now() - 2 * 3600 * 1000;
+    var list = S.events.filter(function (e) { return (e.level === 'warn' || e.level === 'error') && e.ts >= since; }).slice(0, 3);
+    if (!list.length) return;
+    box.appendChild(h('h3', { style: 'margin:0', text: T('Требует внимания') }));
+    list.forEach(function (e) {
+      box.appendChild(h('div', { class: 'warnbox' + (e.level === 'error' ? ' bad' : '') }, h('span', { class: 'mono dim', text: fmtTime(e.ts) + '  ' }), e.message));
     });
-    if (!S.events.length) list.appendChild(h('div', { class: 'empty', text: T('Событий пока нет') }));
-    card.appendChild(list);
+    box.appendChild(h('div', { class: 'small' }, goLink(T('Все события — в «Журнале»'), 'log', 'events')));
   }
+
+  function levelBadge(l) { return h('span', { class: 'badge ' + (l === 'error' ? 'bad' : l === 'warn' ? 'warn' : ''), text: l === 'error' ? T('ошибка') : l === 'warn' ? T('внимание') : T('инфо') }); }
 
   var STATUS_RU = {
     received: ['получено', ''], queued: ['в очереди', 'accent'], playing: ['играет', 'ok'], done: ['воспроизведено', 'ok'],
     failed: ['ошибка', 'bad'], skipped: ['пропущено', 'warn'], dropped: ['отменено', 'warn'], ignored: ['не настроено', ''],
-    observed: ['наблюдение', ''], missed: ['пропущено (устарело)', 'warn'],
+    observed: ['наблюдение', ''], missed: ['пропущено (устарело)', 'warn'], held: ['ждёт проверки', 'warn'],
   };
   var SOURCE_RU = { eventsub: 'Twitch', recovery: 'восстановлено', simulate: 'симуляция', test: 'тест' };
 
-  function renderRedemptionsCard() {
-    var card = h('div', { class: 'card' }, h('h2', { text: T('Последние активации наград') }));
-    if (!S.redemptions.length) { card.appendChild(h('div', { class: 'empty', text: T('Пока не было активаций') })); return card; }
+  /** Активации наград: limit — короткий список для Пульта, без limit — таблица для «Журнала». */
+  function renderRedemptionsCard(limit) {
+    var stOf = function (r) { return STATUS_RU[r.status] ? [T(STATUS_RU[r.status][0]), STATUS_RU[r.status][1]] : [r.status, '']; };
+    if (limit) {
+      var card = h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: T('Последние награды') }),
+        h('span', { class: 'small' }, goLink(T('Весь журнал'), 'log', 'redemptions'))));
+      if (!S.redemptions.length) { card.appendChild(h('div', { class: 'empty', text: T('Пока не было активаций') })); return card; }
+      S.redemptions.slice(0, limit).forEach(function (r) {
+        var st = stOf(r);
+        card.appendChild(h('div', { class: 'feed-row' },
+          h('span', { class: 'feed-time', text: fmtTime(r.received_at) }),
+          h('div', { class: 'feed-main' }, h('b', { text: r.user_name || r.user_login }), h('span', { class: 'r', text: ' · ' + r.reward_title }),
+            r.user_input ? h('div', { class: 'feed-q', title: r.user_input, text: '«' + r.user_input + '»' }) : null,
+            r.status_msg ? h('div', { class: 'feed-q dim', title: r.status_msg, text: r.status_msg }) : null),
+          h('span', { class: 'badge ' + st[1], text: st[0] })));
+      });
+      return card;
+    }
+    var full = h('div', { class: 'card' });
+    if (!S.redemptions.length) { full.appendChild(h('div', { class: 'empty', text: T('Пока не было активаций') })); return full; }
     var tb = h('tbody');
     S.redemptions.slice(0, 25).forEach(function (r) {
-      var st = STATUS_RU[r.status] ? [T(STATUS_RU[r.status][0]), STATUS_RU[r.status][1]] : [r.status, ''];
+      var st = stOf(r);
       tb.appendChild(h('tr', null,
-        h('td', { class: 'muted', text: fmtTime(r.received_at) }),
+        h('td', { class: 'muted mono', text: fmtTime(r.received_at) }),
         h('td', { text: r.user_name || r.user_login }),
         h('td', null, r.reward_title, r.user_input ? h('div', { class: 'muted small', text: '«' + r.user_input + '»' }) : null),
         h('td', null, h('span', { class: 'badge ' + st[1], text: st[0] }), r.status_msg ? h('div', { class: 'muted small', text: r.status_msg }) : null),
         h('td', { class: 'muted small', text: SOURCE_RU[r.source] ? T(SOURCE_RU[r.source]) : r.source })));
     });
-    card.appendChild(h('table', null, h('thead', null, h('tr', null, h('th', { text: T('Время') }), h('th', { text: T('Зритель') }), h('th', { text: T('Награда') }), h('th', { text: T('Статус') }), h('th', { text: T('Источник') }))), tb));
-    return card;
+    full.appendChild(h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, h('tr', null, h('th', { text: T('Время') }), h('th', { text: T('Зритель') }), h('th', { text: T('Награда') }), h('th', { text: T('Статус') }), h('th', { text: T('Источник') }))), tb)));
+    return full;
   }
 
   // ---------------- Награды ----------------
@@ -455,56 +568,106 @@
     });
   }
 
+  var rewardFilter = 'all';
+  var rewardOpen = {};
+
+  function hasMediaSet(r) { return !!(r.media_id || r.sound_id || r.video_id); }
+
   function renderRewards() {
     var root = clear($('page-rewards'));
-    root.appendChild(h('div', { class: 'card-head' }, h('h1', { text: T('Награды') }),
-      h('div', { class: 'row' },
-        h('button', { class: 'primary', text: T('+ Новая награда в Twitch'), onclick: function () {
-          var t = prompt(T('Название новой награды (до 45 символов):'), '');
-          if (!t) return;
-          var c = Number(prompt(T('Стоимость в баллах:'), '1000'));
-          if (!c) return;
-          var cd = Number(prompt(T('Перезарядка в секундах (0 — без перезарядки):'), '60') || 0);
-          if (!confirm(T('Создать в Twitch награду «{0}» за {1} баллов? Она сразу станет видна зрителям.', [t, c]))) return;
-          act(post('/api/rewards/create', { confirm: true, title: t, cost: c, cooldownSec: cd }), T('Награда создана — назначьте ей медиафайл и включите')).then(load);
-        } }),
-        h('button', { text: T('Обновить из Twitch'), onclick: function () { act(post('/api/rewards/sync'), T('Список наград обновлён')).then(load); } }),
-        h('button', { text: T('Добавить локальную тестовую'), onclick: function () {
-          var t = prompt(T('Название тестовой награды (только для проверки, в Twitch не создаётся):'), T('Тестовая награда'));
-          if (t) act(post('/api/rewards/local', { title: t })).then(load);
-        } }))));
-    root.appendChild(h('div', { class: 'infobox' },
-      h('p', null, T('Награды загружаются из Twitch. Новые награды по умолчанию '), h('b', { text: T('выключены') }), T(' в боте — включите и назначьте им звук. Режим «С видео» показывает выбранное видео/GIF, «Только звук» — проигрывает только звук.')),
-      h('p', { style: 'margin:0' }, T('Метка «Другое приложение» означает, что награду создал Sound Alerts или другой сервис: бот может на неё реагировать, но изменить её в Twitch не может.'))));
+    root.appendChild(pageHead(T('Награды'), T('Награды за баллы канала. Новые награды из Twitch приходят выключенными — включите и назначьте звук или видео.'), [
+      btn('plus', T('Новая награда в Twitch'), { class: 'primary', onclick: function () {
+        var t = prompt(T('Название новой награды (до 45 символов):'), '');
+        if (!t) return;
+        var c = Number(prompt(T('Стоимость в баллах:'), '1000'));
+        if (!c) return;
+        var cd = Number(prompt(T('Перезарядка в секундах (0 — без перезарядки):'), '60') || 0);
+        if (!confirm(T('Создать в Twitch награду «{0}» за {1} баллов? Она сразу станет видна зрителям.', [t, c]))) return;
+        act(post('/api/rewards/create', { confirm: true, title: t, cost: c, cooldownSec: cd }), T('Награда создана — назначьте ей медиафайл и включите')).then(load);
+      } }),
+      btn('refresh', T('Обновить из Twitch'), { onclick: function () { act(post('/api/rewards/sync'), T('Список наград обновлён')).then(load); } }),
+      h('button', { class: 'ghost', text: T('Добавить локальную тестовую'), onclick: function () {
+        var t = prompt(T('Название тестовой награды (только для проверки, в Twitch не создаётся):'), T('Тестовая награда'));
+        if (t) act(post('/api/rewards/local', { title: t })).then(load);
+      } })]));
 
     if (!S.rewards.length) {
       root.appendChild(h('div', { class: 'card' }, h('div', { class: 'empty', text: S.status.auth.status === 'ok' ? T('Наград нет. Нажмите «Обновить из Twitch».') : T('Войдите в Twitch, чтобы загрузить награды, или добавьте локальную тестовую награду.') })));
       return;
     }
-    S.rewards.forEach(function (r) { root.appendChild(rewardCard(r)); });
+    var filters = [
+      ['all', T('Все'), function () { return true; }],
+      ['on', T('Включены'), function (r) { return !!r.bot_enabled; }],
+      ['off', T('Выключены'), function (r) { return !r.bot_enabled; }],
+      ['nomedia', T('Без медиафайла'), function (r) { return !hasMediaSet(r); }],
+    ];
+    var cur = filters.filter(function (f) { return f[0] === rewardFilter; })[0] || filters[0];
+    root.appendChild(h('div', { class: 'chips' }, filters.map(function (f) {
+      return h('button', { class: 'chip' + (f === cur ? ' active' : ''), 'aria-pressed': f === cur ? 'true' : 'false', onclick: function () { rewardFilter = f[0]; renderRewards(); } },
+        f[1], ' ', h('span', { class: 'n', text: String(S.rewards.filter(f[2]).length) }));
+    })));
+    var list = S.rewards.filter(cur[2]);
+    if (!list.length) root.appendChild(h('div', { class: 'card' }, h('div', { class: 'empty', text: T('Таких наград нет') })));
+    list.forEach(function (r) { root.appendChild(rewardCard(r)); });
+    root.appendChild(h('p', { class: 'hint', style: 'margin-top:16px' }, T('Награды загружаются из Twitch. Новые награды по умолчанию '), h('b', { text: T('выключены') }), T(' в боте — включите и назначьте им звук. Режим «С видео» показывает выбранное видео/GIF, «Только звук» — проигрывает только звук.')));
+    root.appendChild(h('p', { class: 'hint' }, T('Метка «Другое приложение» означает, что награду создал Sound Alerts или другой сервис: бот может на неё реагировать, но изменить её в Twitch не может.')));
+  }
+
+  function mediaName(id) {
+    var m = id && S.media.find(function (x) { return x.id === id; });
+    return m ? m.name : '';
   }
 
   function rewardCard(r) {
     var raw = {}; try { raw = JSON.parse(r.raw || '{}'); } catch (e) { /* */ }
     var isLocal = r.id.indexOf('local-') === 0;
-    var card = h('div', { class: 'card reward-card' + (r.bot_enabled ? '' : ' disabled') });
+    var open = !!rewardOpen[r.id];
+    var card = h('div', { class: 'card reward-card' + (r.bot_enabled ? '' : ' disabled') + (open ? ' open' : '') });
     var badges = [];
     if (isLocal) badges.push(h('span', { class: 'badge', text: T('Локальная (тест)') }));
     else if (r.manageable) badges.push(h('span', { class: 'badge accent', text: T('Создана ботом') }));
     else badges.push(h('span', { class: 'badge', text: T('Другое приложение') }));
-    if (!isLocal) badges.push(r.twitch_enabled ? h('span', { class: 'badge ok', text: T('Активна в Twitch') }) : h('span', { class: 'badge warn', text: T('Выключена/на паузе в Twitch') }));
-    var enabled = h('input', { type: 'checkbox', checked: !!r.bot_enabled, onchange: function () {
-      if (enabled.checked && !r.manageable && !isLocal && S.settings.mode === 'active' &&
+    if (!isLocal && !r.twitch_enabled) badges.push(h('span', { class: 'badge warn', text: T('Выключена/на паузе в Twitch') }));
+    var enabled = toggle(!!r.bot_enabled, function (v) {
+      if (v && !r.manageable && !isLocal && S.settings.mode === 'active' &&
         !confirm(T('Включить «{0}» в боте?\n\nЕсли эту награду всё ещё обрабатывает Sound Alerts (его источник есть в {1}), оповещение прозвучит дважды. Сначала уберите или скройте источник Sound Alerts в {2}, либо включите «Режим наблюдения».', [r.title, appShort(), appShort()]))) {
         enabled.checked = false; return;
       }
-      saveReward(r.id, { bot_enabled: enabled.checked }).then(function () { card.classList.toggle('disabled', !enabled.checked); });
-    } });
-    card.appendChild(h('div', { class: 'card-head' },
-      h('div', { class: 'reward-title' }, h('span', { class: 'swatch', style: 'background:' + (/^#[0-9a-f]{6}$/i.test(r.background_color) ? r.background_color : '#555') }),
-        h('strong', { text: r.title }), h('span', { class: 'muted', text: T('{0} баллов', [r.cost]) }), badges),
-      h('label', { class: 'check', style: 'margin:0' }, enabled, T('Включена в боте'))));
-    if (r.prompt) card.appendChild(h('div', { class: 'muted small', text: r.prompt }));
+      saveReward(r.id, { bot_enabled: v }).then(function () { if (rewardFilter !== 'all') renderRewards(); else { card.classList.toggle('disabled', !v); enLabel.textContent = v ? T('Включена') : T('Выключена'); } });
+    }, T('Включена в боте'));
+    var enLabel = h('span', { text: r.bot_enabled ? T('Включена') : T('Выключена') });
+    var swatchColor = /^#[0-9a-f]{6}$/i.test(r.background_color) ? r.background_color : '#5C5C6B';
+    var swatch = h('div', { class: 'swatch' }, icon('gift'));
+    swatch.style.background = swatchColor;
+
+    // Короткая сводка: что играет.
+    var videoName = r.play_mode !== 'audio' ? mediaName(r.video_id) : '';
+    var meta = h('div', { class: 'rw-meta' },
+      videoName ? h('span', null, icon('video'), videoName) : null,
+      mediaName(r.media_id) ? h('span', null, icon('sound'), mediaName(r.media_id)) : null,
+      r.tts ? h('span', null, icon('voice'), T('озвучивает текст')) : null,
+      r.cooldown_sec ? h('span', null, icon('clock'), T('не чаще 1 раза в {0} с', [r.cooldown_sec])) : null,
+      !hasMediaSet(r) ? h('span', { class: 'miss' }, icon('alert'), T('медиафайл не выбран')) : null);
+    var toggleOpen = function () { rewardOpen[r.id] = !rewardOpen[r.id]; renderRewards(); };
+    card.appendChild(h('div', { class: 'rw-head' }, swatch,
+      h('div', { class: 'rw-info', onclick: toggleOpen },
+        h('div', { class: 'reward-title' }, h('span', { text: r.title }), h('span', { class: 'rw-cost', text: T('{0} баллов', [r.cost]) }), badges), meta),
+      h('div', { class: 'rw-ctl' },
+        h('label', null, enLabel, enabled),
+        btn('play', T('Тест'), { class: 'small', onclick: function () { act(post('/api/rewards/' + encodeURIComponent(r.id) + '/test'), T('Тест добавлен в очередь')); } }),
+        h('button', { class: 'ghost small sq', title: open ? T('Свернуть') : T('Настроить'), 'aria-label': open ? T('Свернуть') : T('Настроить'), 'aria-expanded': open ? 'true' : 'false', onclick: toggleOpen }, icon('chev', 'chev')))));
+
+    // Предупреждения видны и в свёрнутой карточке.
+    var warns = [];
+    [r.media_id, r.video_id, r.sound_id].forEach(function (id) {
+      var m = id && S.media.find(function (x) { return x.id === id; });
+      if (m && m.status === 'broken') warns.push(h('div', { class: 'warnbox', text: T('Медиафайл «{0}» повреждён: {1}', [m.name, m.status_msg]) }));
+    });
+    if (r.bot_enabled && !hasMediaSet(r)) warns.push(h('div', { class: 'warnbox', text: T('Награда включена, но медиафайл не выбран — оповещение не покажется.') }));
+    if (!open) {
+      if (warns.length) card.appendChild(h('div', { style: 'padding:0 14px 12px' }, warns));
+      return card;
+    }
 
     var media = h('select', { onchange: function () { saveReward(r.id, { media_id: media.value || null }); } }, mediaOptions(r.media_id));
     var video = h('select', { onchange: function () { saveReward(r.id, { video_id: video.value || null }).then(function () { renderRewards(); }); } }, mediaOptions(r.video_id, function (m) { return m.kind !== 'audio'; }));
@@ -514,76 +677,77 @@
     var effectiveMode = hasVisual ? r.play_mode : 'audio';
     var chroma = h('input', { type: 'checkbox', checked: !!r.chroma_key, onchange: function () { saveReward(r.id, { chroma_key: chroma.checked }); } });
     var chromaField = h('label', { class: 'check', title: T('Для видео на зелёном фоне (green screen): зелёный станет прозрачным') }, chroma, T('Убрать зелёный фон (хромакей)'));
-    var modeBtn = function (mode, text) {
-      return h('button', { class: 'small' + (effectiveMode === mode ? ' active' : ''), text: text, disabled: mode === 'video' && !hasVisual,
+    var modeBtn = function (mode, ic, text) {
+      return h('button', { class: 'small' + (effectiveMode === mode ? ' active' : ''), disabled: mode === 'video' && !hasVisual,
         title: mode === 'video' && !hasVisual ? T('Сначала выберите видео') : '',
-        onclick: function () { saveReward(r.id, { play_mode: mode }).then(function () { renderRewards(); }); } });
+        onclick: function () { saveReward(r.id, { play_mode: mode }).then(function () { renderRewards(); }); } }, icon(ic), text);
     };
     var modeSwitch = h('div', { class: 'field' }, h('label', { text: T('Воспроизведение') }),
-      h('div', { class: 'tabs', style: 'margin:0' }, modeBtn('video', T('🎬 С видео')), modeBtn('audio', T('🔊 Только звук'))),
-      S.settings.audioOnly ? h('span', { class: 'hint', text: T('Сейчас видео выключено для всех наград (Главная → Видео)') }) : null);
+      h('div', { class: 'tabs', style: 'margin:0;align-self:flex-start' }, modeBtn('video', 'video', T('С видео')), modeBtn('audio', 'sound', T('Только звук'))),
+      S.settings.audioOnly ? h('span', { class: 'hint', text: T('Сейчас видео выключено для всех наград (Пульт → Видео)') }) : null);
     var sound = h('select', { onchange: function () { saveReward(r.id, { sound_id: sound.value || null }); } }, mediaOptions(r.sound_id, function (m) { return m.kind === 'audio'; }));
-    var volLabel = h('span', { text: r.volume + '%' });
-    var vol = h('input', { type: 'range', min: 0, max: 100, value: r.volume, oninput: function () { volLabel.textContent = vol.value + '%'; }, onchange: function () { saveReward(r.id, { volume: Number(vol.value) }); } });
+    var volLabel = h('output', { text: r.volume + '%' });
+    var vol = h('input', { type: 'range', min: 0, max: 100, value: r.volume, 'aria-label': T('Громкость: '), oninput: function () { volLabel.textContent = vol.value + '%'; }, onchange: function () { saveReward(r.id, { volume: Number(vol.value) }); } });
     var numField = function (label, key, value, scale, hint) {
       var inp = h('input', { type: 'number', min: 0, step: scale === 1000 ? 0.5 : 1, value: scale === 1000 ? value / 1000 : value, onchange: function () {
         var p = {}; p[key] = Math.round(Number(inp.value) * scale); saveReward(r.id, p);
       } });
       return h('div', { class: 'field' }, h('label', { text: label }), inp, hint ? h('span', { class: 'hint', text: hint }) : null);
     };
-    var caption = h('input', { type: 'checkbox', checked: !!r.show_caption, onchange: function () { saveReward(r.id, { show_caption: caption.checked }); } });
-    var tts = h('input', { type: 'checkbox', checked: !!r.tts, onchange: function () { saveReward(r.id, { tts: tts.checked }).then(function () { load(); }); } });
-    var ttsHint = !r.tts ? '' : r.manageable || isLocal ? '' : !raw.is_user_input_required
-      ? T('Включите у этой награды на Twitch «Требовать ввод текста» — иначе зритель не сможет написать текст.') : '';
-    card.appendChild(h('div', { class: 'reward-body' },
+    var caption = toggle(!!r.show_caption, function (v) { saveReward(r.id, { show_caption: v }); }, T('Показывать подпись'));
+    var tts = toggle(!!r.tts, function (v) { saveReward(r.id, { tts: v }).then(function () { load(); }); }, T('Озвучить текст зрителя'));
+    var ttsHint = !r.tts ? T('Зритель пишет текст при получении награды — бот читает его голосом Windows (после звука или видео награды)')
+      : r.manageable || isLocal || raw.is_user_input_required ? T('Голос и проверка текста — в разделе «Озвучка»')
+        : T('Включите у этой награды на Twitch «Требовать ввод текста» — иначе зритель не сможет написать текст.');
+
+    var body = h('div', { class: 'reward-body' });
+    if (r.prompt) body.appendChild(h('div', { class: 'muted small prompt', text: r.prompt }));
+    warns.forEach(function (w) { body.appendChild(w); });
+    if (onlineMedia) body.appendChild(h('div', { class: fallbackOk ? 'infobox' : 'warnbox', text: fallbackOk
+      ? T('🌐 «{0}» показывается онлайн с сервера Klipy. Если Klipy недоступен — сыграет «Звук (основной файл)».', [onlineMedia.name])
+      : T('🌐 «{0}» показывается онлайн с сервера Klipy. Выберите «Звук (основной файл)» — он сыграет, если Klipy или интернет недоступны; иначе оповещения не будет.', [onlineMedia.name]) }));
+    body.appendChild(h('div', { class: 'col' }, h('h3', { text: T('Что показывать') }),
       modeSwitch,
       h('div', { class: 'field' }, h('label', { text: T('Звук (основной файл)') }), media),
       h('div', { class: 'field' }, h('label', { text: T('Видео / GIF / картинка') }), video, h('span', { class: 'hint', text: T('В режиме «С видео» у видео играет его собственный звук') })),
       chromaField,
-      h('div', { class: 'field' }, h('label', { text: T('Звук к видео/GIF (необязательно)') }), sound),
-      h('div', { class: 'field' }, h('label', null, T('Громкость: '), volLabel), vol),
-      numField(T('Длительность, с'), 'duration_ms', r.duration_ms, 1000, T('0 — до конца видео/звука')),
-      numField(T('Задержка перед показом, с'), 'delay_ms', r.delay_ms, 1000),
-      numField(T('Антиспам: повтор от зрителя не чаще, с'), 'cooldown_sec', r.cooldown_sec, 1, T('0 — без ограничения')),
-      h('label', { class: 'check' }, caption, T('Показывать подпись')),
-      h('div', null, h('label', { class: 'check', title: T('Зритель пишет текст при получении награды — бот читает его голосом Windows (после звука или видео награды)') }, tts, T('🗣 Озвучить текст зрителя')),
-        ttsHint ? h('div', { class: 'hint small muted', style: 'margin:-6px 0 6px 24px', text: ttsHint } ) : null)));
+      h('div', { class: 'field' }, h('label', { text: T('Звук к видео/GIF (необязательно)') }), sound)));
+    body.appendChild(h('div', { class: 'col' }, h('h3', { text: T('Как показывать') }),
+      h('div', { class: 'field' }, h('label', { text: T('Громкость') }), h('div', { class: 'range-row' }, vol, volLabel)),
+      h('div', { class: 'form-grid' },
+        numField(T('Длительность, с'), 'duration_ms', r.duration_ms, 1000, T('0 — до конца видео/звука')),
+        numField(T('Задержка перед показом, с'), 'delay_ms', r.delay_ms, 1000),
+        numField(T('Антиспам: повтор от зрителя не чаще, с'), 'cooldown_sec', r.cooldown_sec, 1, T('0 — без ограничения'))),
+      opt(T('Показывать подпись'), null, caption),
+      opt(T('Озвучить текст зрителя'), ttsHint, tts)));
 
     var actions = h('div', { class: 'reward-actions' },
-      h('button', { class: 'primary small', text: T('▶ Тест'), onclick: function () { act(post('/api/rewards/' + encodeURIComponent(r.id) + '/test'), T('Тест добавлен в очередь')); } }),
-      h('button', { class: 'small', text: T('Симулировать событие Twitch'), title: T('Проверка всего пути обработки (включено/выключено, режим, очередь) без списания баллов'), onclick: function () {
+      btn('play', T('Тест'), { class: 'primary small', onclick: function () { act(post('/api/rewards/' + encodeURIComponent(r.id) + '/test'), T('Тест добавлен в очередь')); } }),
+      btn('bolt', T('Симулировать событие Twitch'), { class: 'small', title: T('Проверка всего пути обработки (включено/выключено, режим, очередь) без списания баллов'), onclick: function () {
         act(post('/api/rewards/' + encodeURIComponent(r.id) + '/simulate', { user: 'test_viewer' })).then(function (res) {
           var m = { queued: T('Событие обработано и поставлено в очередь'), ignored: T('Событие получено, но награда выключена или не настроена'), observed: T('Режим наблюдения: событие записано без воспроизведения'), skipped: T('Пропущено (очередь/антиспам)'), failed: T('Ошибка: проверьте медиафайл') };
           toast(m[res.result] || (T('Результат: {0}', [res.result])), res.result === 'queued' ? 'ok' : '');
         });
       } }));
     if (!isLocal && !r.manageable) {
-      actions.appendChild(h('button', { class: 'small', text: T('Создать свою копию в Twitch…'), onclick: function () { cloneReward(r); } }));
+      actions.appendChild(btn('copy', T('Создать свою копию в Twitch…'), { class: 'small ghost', onclick: function () { cloneReward(r); } }));
     }
     if (r.manageable) {
       var paused = raw.is_paused;
-      actions.appendChild(h('button', { class: 'small', text: paused ? T('Снять с паузы в Twitch') : T('Поставить на паузу в Twitch'), onclick: function () {
+      actions.appendChild(btn(paused ? 'play' : 'pause', paused ? T('Снять с паузы в Twitch') : T('Поставить на паузу в Twitch'), { class: 'small ghost', onclick: function () {
         act(post('/api/rewards/' + encodeURIComponent(r.id) + '/twitch', { is_paused: !paused }), T('Изменено в Twitch')).then(load);
       } }));
-      actions.appendChild(h('button', { class: 'small', text: T('Переименовать…'), onclick: function () {
+      actions.appendChild(h('button', { class: 'small ghost', text: T('Переименовать…'), onclick: function () {
         var t = prompt(T('Новое название награды в Twitch (до 45 символов):'), r.title);
         if (t && t !== r.title) act(post('/api/rewards/' + encodeURIComponent(r.id) + '/twitch', { title: t }), T('Переименовано')).then(load);
       } }));
-      actions.appendChild(h('button', { class: 'small', text: T('Стоимость…'), onclick: function () {
+      actions.appendChild(h('button', { class: 'small ghost', text: T('Стоимость…'), onclick: function () {
         var c = prompt(T('Новая стоимость в баллах:'), String(r.cost));
         if (c && Number(c) !== r.cost) act(post('/api/rewards/' + encodeURIComponent(r.id) + '/twitch', { cost: Number(c) }), T('Стоимость изменена')).then(load);
       } }));
     }
-    card.appendChild(actions);
-
-    [r.media_id, r.video_id, r.sound_id].forEach(function (id) {
-      var m = id && S.media.find(function (x) { return x.id === id; });
-      if (m && m.status === 'broken') card.appendChild(h('div', { class: 'warnbox', text: T('Медиафайл «{0}» повреждён: {1}', [m.name, m.status_msg]) }));
-    });
-    if (onlineMedia) card.appendChild(h('div', { class: fallbackOk ? 'infobox' : 'warnbox', style: 'margin-top:10px', text: fallbackOk
-      ? T('🌐 «{0}» показывается онлайн с сервера Klipy. Если Klipy недоступен — сыграет «Звук (основной файл)».', [onlineMedia.name])
-      : T('🌐 «{0}» показывается онлайн с сервера Klipy. Выберите «Звук (основной файл)» — он сыграет, если Klipy или интернет недоступны; иначе оповещения не будет.', [onlineMedia.name]) }));
-    if (r.bot_enabled && !r.media_id && !r.sound_id && !r.video_id) card.appendChild(h('div', { class: 'warnbox', text: T('Награда включена, но медиафайл не выбран — оповещение не покажется.') }));
+    body.appendChild(actions);
+    card.appendChild(body);
     return card;
   }
 
@@ -761,14 +925,16 @@
   function renderMedia() {
     var root = clear($('page-media'));
     var fileInput = h('input', { type: 'file', multiple: true, accept: '.mp3,.wav,.ogg,.m4a,.webm,.mp4,.gif,.png,.jpg,.jpeg,.webp', style: 'display:none', onchange: function () { uploadFiles(fileInput.files); fileInput.value = ''; } });
-    root.appendChild(h('div', { class: 'card-head' }, h('h1', { text: T('Медиа') }),
-      h('div', { class: 'row' },
-        h('button', { text: T('Проверить все файлы'), onclick: function () {
-          probed = {};
-          act(post('/api/media/verify')).then(function (r) { toast(T('Проверено: {0}, повреждено: {1}{2}', [r.checked, r.broken, (r.warnings ? T(', с предупреждениями: {0}', [r.warnings]) : '')]), r.broken ? 'bad' : r.warnings ? '' : 'ok'); load(); });
-        } }),
-        h('button', { text: T('Открыть папку'), onclick: function () { act(post('/api/open-folder', { which: 'media' })); } }),
-        h('a', { class: 'btn primary', href: '#find', text: T('🔎 Найти медиа') }))));
+    var files = TABS.media === 'files';
+    root.appendChild(pageHead(T('Медиатека'), T('Звуки, видео и картинки для наград. Файлы хранятся на этом компьютере.'), files ? [
+      btn('check', T('Проверить все файлы'), { class: 'ghost', onclick: function () {
+        probed = {};
+        act(post('/api/media/verify')).then(function (r) { toast(T('Проверено: {0}, повреждено: {1}{2}', [r.checked, r.broken, (r.warnings ? T(', с предупреждениями: {0}', [r.warnings]) : '')]), r.broken ? 'bad' : r.warnings ? '' : 'ok'); load(); });
+      } }),
+      btn('folder', T('Открыть папку'), { class: 'ghost', onclick: function () { act(post('/api/open-folder', { which: 'media' })); } }),
+      btn('upload', T('Загрузить файлы'), { class: 'primary', onclick: function () { fileInput.click(); } })] : null));
+    root.appendChild(pageTabs([['files', T('Мои файлы'), S.media.length], ['find', T('Найти в интернете')]], TABS.media, function (t) { TABS.media = t; renderMedia(); }));
+    if (!files) { renderFindInto(root); return; }
     var dz = h('div', { class: 'dropzone', onclick: function () { fileInput.click(); } },
       h('div', { text: T('Перетащите файлы сюда или нажмите для выбора') }),
       h('div', { class: 'small', text: T('MP3, WAV, OGG, M4A, WebM, MP4 (H.264; другие кодеки — кнопкой «Перекодировать»), GIF, PNG, JPG, WebP — до 200 МБ') }));
@@ -799,17 +965,17 @@
       }
       var origin = m.source === 'klipy' ? T('Klipy (онлайн)') : m.source === 'freesound' ? 'Freesound' : m.source === 'url' ? T('по ссылке') : '';
       var st = m.status === 'broken' ? h('span', { class: 'badge bad', text: m.fileProblem ? T('повреждён') : T('не воспроизводится') }) : m.status === 'warning' ? h('span', { class: 'badge warn', text: T('внимание') }) : h('span', { class: 'badge ok', text: 'OK' });
-      grid.appendChild(h('div', { class: 'media-card' },
+      grid.appendChild(h('div', { class: 'media-card' + (m.status === 'broken' ? ' bad' : m.status === 'warning' ? ' warn' : '') },
         h('div', { class: 'media-preview' }, prev),
         h('div', { class: 'media-info' },
           h('div', { class: 'media-name', text: m.name }),
           h('div', { class: 'row small muted' }, st, { audio: T('звук'), video: T('видео'), image: T('изображение') }[m.kind], '·', m.source === 'klipy' ? T('онлайн') : fmtSize(m.size), '·', fmtDur(m.duration_ms)),
           origin ? h('div', { class: 'small muted' }, T('Источник: '), m.source_url ? h('a', { href: m.source_url, target: '_blank', rel: 'noopener noreferrer', text: origin }) : origin) : null,
           m.attribution && m.source === 'freesound' ? h('div', { class: 'small muted', text: m.attribution }) : null,
-          m.status_msg ? h('div', { class: 'small', style: 'color:' + (m.status === 'broken' ? '#ff9a9e' : '#ffd38a'), text: m.status_msg }) : null,
+          m.status_msg ? h('div', { class: 'small ' + (m.status === 'broken' ? 'bad-text' : 'warn-text'), text: m.status_msg }) : null,
           h('div', { class: 'small muted', text: m.usedBy.length ? T('Используется: {0}', [m.usedBy.join(', ')]) : T('Не используется') }),
           h('div', { class: 'media-actions' },
-            h('button', { class: 'small primary', text: T('▶ В {0}', [appShort()]), onclick: function () { act(post('/api/media/' + m.id + '/test'), T('Отправлено в overlay')); } }),
+            btn('play', T('В {0}', [appShort()]), { class: 'small primary', onclick: function () { act(post('/api/media/' + m.id + '/test'), T('Отправлено в overlay')); } }),
             // Перекодирование: для видео всегда, для звука — если с ним проблема.
             m.source !== 'klipy' && (m.kind === 'video' || (m.kind === 'audio' && m.status !== 'ok')) && !m.panelCantRead
               ? h('button', { class: 'small' + (m.status !== 'ok' ? ' warn-btn' : ''), text: T('Перекодировать'), title: T('Пересохранить в WebM, который понимают OBS и Streamlabs'), onclick: function () { transcodeMedia(m); } })
@@ -817,7 +983,7 @@
             h('button', { class: 'small', text: T('Переименовать'), onclick: function () {
               var n = prompt(T('Новое имя файла:'), m.name); if (n) act(post('/api/media/' + m.id + '/rename', { name: n })).then(load);
             } }),
-            h('button', { class: 'small danger', text: T('Удалить'), onclick: function () {
+            h('button', { class: 'small ghost sq', title: T('Удалить'), 'aria-label': T('Удалить'), onclick: function () {
               if (m.usedBy.length) {
                 if (!confirm(T('Файл «{0}» используется наградами: {1}.\nУдалить его и отвязать от наград? Это нельзя отменить.', [m.name, m.usedBy.join(', ')]))) return;
                 act(post('/api/media/' + m.id + '/delete', { confirm: true, force: true }), T('Удалено')).then(load);
@@ -825,7 +991,7 @@
                 if (!confirm(T('Удалить файл «{0}»? Это нельзя отменить.', [m.name]))) return;
                 act(post('/api/media/' + m.id + '/delete', { confirm: true }), T('Удалено')).then(load);
               }
-            } })))));
+            } }, icon('trash'))))));
     });
     root.appendChild(grid);
   }
@@ -869,12 +1035,13 @@
   function needKey(name, how) {
     return h('div', { class: 'card' }, h('h2', { text: T('Нужен ключ {0}', [name]) }),
       h('p', null, how),
-      h('p', null, T('Затем вставьте его в '), h('a', { href: '#settings', text: T('«Настройки» → «Поиск медиа»') }), T('. Ключ бесплатный; бот хранит его только на этом компьютере.')));
+      h('p', null, T('Затем вставьте его в '), goLink(T('«Настройки» → «Ключи сервисов»'), 'settings', 'keys'), T('. Ключ бесплатный; бот хранит его только на этом компьютере.')));
   }
 
-  function renderFind() {
-    var root = clear($('page-find'));
-    root.appendChild(h('h1', { text: T('Найти медиа') }));
+  /** Поиск перерисовывает вкладку «Найти в интернете» Медиатеки. */
+  function renderFind() { if (page === 'media' && TABS.media === 'find') renderMedia(); }
+
+  function renderFindInto(root) {
     var tab = function (id, text) { return h('button', { class: F.tab === id ? 'active' : '', text: text, onclick: function () { F.tab = id; renderFind(); } }); };
     root.appendChild(h('div', { class: 'tabs' }, tab('klipy', T('Klipy — мемы и клипы')), tab('freesound', T('Freesound — звуки')), tab('url', T('По ссылке'))));
     if (F.tab === 'klipy') renderKlipy(root);
@@ -1085,38 +1252,45 @@
   function renderSupport() {
     var root = clear($('page-support'));
     var L = S.links || {};
-    var u = S.update || {};
-    root.appendChild(h('h1', { text: T('Поддержать автора') }));
+    root.appendChild(pageHead(T('Поддержать автора'), T('Бот бесплатный и работает без подписок. Если он вам пригодился — поддержите разработку: это помогает добавлять новые функции и быстрее исправлять ошибки.')));
     root.appendChild(h('div', { class: 'grid cols-2' },
       h('div', { class: 'card support-card' },
-        h('h2', { text: T('❤ Поддержать на Boosty') }),
-        h('p', { text: T('Бот бесплатный и работает без подписок. Если он вам пригодился — поддержите разработку: это помогает добавлять новые функции и быстрее исправлять ошибки.') }),
-        extLink(L.boosty, T('❤ Задонатить на Boosty'), 'btn primary')),
-      h('div', { class: 'card' },
-        h('h2', { text: T('💡 Новые предложения') }),
-        h('p', { text: T('Не хватает какой-то функции или нашли ошибку? Напишите — лучшие идеи попадут в следующие версии.') }),
+        h('div', { class: 'big-ic heart' }, icon('heart')),
+        h('h2', { style: 'margin:0', text: T('Поддержать на Boosty') }),
+        h('p', { class: 'muted', text: T('Разовый донат или подписка — как удобно.') }),
+        h('div', null, extLink(L.boosty, T('Задонатить на Boosty'), 'btn primary'))),
+      h('div', { class: 'card support-card' },
+        h('div', { class: 'big-ic' }, icon('lightbulb')),
+        h('h2', { style: 'margin:0', text: T('Новые предложения') }),
+        h('p', { class: 'muted', text: T('Не хватает какой-то функции или нашли ошибку? Напишите — лучшие идеи попадут в следующие версии.') }),
         h('div', { class: 'row' },
           extLink(L.ideas, T('Предложить на GitHub')),
           extLink(L.boostyProfile, T('Написать на Boosty'))),
-        h('p', { class: 'small muted', style: 'margin-top:8px', text: T('GitHub: нужен бесплатный аккаунт, предложение увидят и другие пользователи. Boosty: личное сообщение автору.') }))));
+        h('p', { class: 'hint', style: 'margin:0', text: T('GitHub: нужен бесплатный аккаунт, предложение увидят и другие пользователи. Boosty: личное сообщение автору.') }))));
+    root.appendChild(h('p', { class: 'hint', style: 'margin-top:14px' }, T('Обновления бота — в '), goLink(T('«Настройки» → «Система»'), 'settings', 'system'), '.'));
+  }
 
+  /** Обновления и история изменений (2.0.0: из «Поддержать автора» переехали в «Настройки» → «Система»). */
+  function updatesCard() {
+    var L = S.links || {};
+    var u = S.update || {};
     var status = u.checking ? T('Проверка…')
       : u.available ? T('Доступна версия {0}', [u.latest])
       : u.error ? T('Не удалось проверить: {0}', [u.error])
       : u.lastCheckAt ? T('У вас последняя версия') : T('Ещё не проверялось');
-    root.appendChild(h('div', { class: 'card' },
+    return h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', { text: T('Обновления') }),
         h('div', { class: 'row' },
-          u.available ? h('button', { class: 'primary small', text: T('Обновить до {0}', [u.latest]), onclick: showUpdateModal }) : null,
-          h('button', { class: 'small', text: u.checking ? T('Проверка…') : T('Проверить обновления'), disabled: u.checking, onclick: function () {
-            act(post('/api/update/check')).then(function (r) { S.update = r; renderSupport(); renderUpdateUi(); toast(r.available ? T('Доступна версия {0}', [r.latest]) : r.error ? r.error : T('У вас последняя версия'), r.error ? 'bad' : 'ok'); });
+          u.available ? btn('download', T('Обновить до {0}', [u.latest]), { class: 'primary small', onclick: showUpdateModal }) : null,
+          btn('refresh', u.checking ? T('Проверка…') : T('Проверить обновления'), { class: 'small', disabled: u.checking, onclick: function () {
+            act(post('/api/update/check')).then(function (r) { S.update = r; renderSettings(); renderUpdateUi(); toast(r.available ? T('Доступна версия {0}', [r.latest]) : r.error ? r.error : T('У вас последняя версия'), r.error ? 'bad' : 'ok'); });
           } }))),
       h('p', null, T('Установлена версия '), h('b', { text: u.current || S.status.version }), ' · ', h('span', { class: 'muted', text: status + (u.lastCheckAt ? ' (' + fmtTime(u.lastCheckAt) + ')' : '') })),
       settingField(T('Проверять обновления автоматически (раз в 6 часов)'), 'autoUpdateCheck', { type: 'check' }),
       u.reason ? h('p', { class: 'small muted', text: u.reason }) : null,
-      h('h3', { text: T('История изменений') }),
+      h('h3', { style: 'margin-top:14px', text: T('История изменений') }),
       changesList(S.changelog || []),
-      h('p', { class: 'small muted' }, T('Исходный код: '), extLink(L.repo, 'GitHub', 'plain'))));
+      h('p', { class: 'small muted', style: 'margin-top:12px' }, T('Исходный код: '), extLink(L.repo, 'GitHub', 'plain')));
   }
 
   // ---------------- Настройки ----------------
@@ -1127,10 +1301,7 @@
     if (opts.type === 'select') {
       inp = h('select', null, opts.options.map(function (o) { return h('option', { value: o[0], text: o[1], selected: String(s[key]) === String(o[0]) }); }));
     } else if (opts.type === 'check') {
-      inp = h('input', { type: 'checkbox', checked: !!s[key] });
-      var lab = h('label', { class: 'check' }, inp, label);
-      inp.addEventListener('change', function () { saveSetting(key, inp.checked); });
-      return h('div', null, lab, opts.hint ? h('div', { class: 'hint small muted', style: 'margin:-6px 0 10px 24px', text: opts.hint }) : null);
+      return opt(label, opts.hint, toggle(!!s[key], function (v) { saveSetting(key, v); }, label));
     } else {
       var val = opts.scale ? s[key] / opts.scale : s[key];
       inp = h('input', { type: opts.type || 'text', value: val, min: opts.min, max: opts.max, step: opts.step });
@@ -1227,73 +1398,113 @@
     var root = clear($('page-settings'));
     clientIdShown = false;
     clearTimeout(clientIdTimer);
-    root.appendChild(h('h1', { text: T('Настройки') }));
-    var langSel = h('select', { 'aria-label': 'Language / Язык' }, I18N.languages.map(function (l) { return h('option', { value: l.id, text: l.name, selected: I18N.lang() === l.id }); }));
-    langSel.addEventListener('change', function () { setLanguage(langSel.value); });
-    root.appendChild(h('div', { class: 'card lang-card' },
-      h('div', { class: 'field', style: 'margin:0' }, h('label', { text: 'Язык / Language' }), langSel,
-        h('span', { class: 'hint', text: T('Язык панели, сообщений бота, служебного текста overlay и меню в трее. Применяется сразу, без перезапуска.') }))));
+    var tab = TABS.settings;
+    root.appendChild(pageHead(T('Настройки')));
+    root.appendChild(pageTabs([['main', T('Основное')], ['twitch', 'Twitch'], ['alerts', T('Оповещения')], ['keys', T('Ключи сервисов')], ['system', T('Система')]], tab,
+      function (t) { TABS.settings = t; renderSettings(); }));
 
-    root.appendChild(h('div', { class: 'grid cols-2' },
-      h('div', { class: 'card' }, h('h2', { text: 'Twitch' }),
-        h('div', { id: 'clientid-box' }, clientIdField()),
-        settingField(T('Разрешить боту управлять наградами'), 'allowManageRewards', { type: 'check', hint: T('Нужно для создания копий наград и возврата баллов при сбое. Без этого бот только читает события.') }),
-        h('div', { id: 'auth-box' })),
-      h('div', { class: 'card' }, h('h2', { text: 'Overlay' }),
-        S.overlayLoader ? h('div', { class: 'field' }, h('label', { text: T('Файл для источника — рекомендуется') }),
-          copyField(S.overlayLoader, T('Путь скопирован'), h('button', { text: T('Папка'), onclick: function () { act(post('/api/open-folder', { which: 'data' })); } })),
-          h('div', { class: 'hint', text: T('В свойствах источника «Браузер» поставьте галочку «Локальный файл» и выберите этот файл. Тогда неважно, что запущено раньше — {0} или бот: источник дождётся бота и подключится сам.', [appShort()]) })) : null,
-        h('div', { class: 'field' }, h('label', { text: S.overlayLoader ? T('Или адрес (URL) — тогда запускайте бота раньше {0}', [appShort()]) : T('Адрес для Browser Source (OBS Studio или Streamlabs Desktop)') }),
-          copyField(S.overlayUrl, T('Адрес скопирован'), h('a', { class: 'btn', href: '/overlay', target: '_blank', text: T('Открыть') }))),
-        h('div', { class: 'form-grid' },
-          settingField(T('Общая громкость, %'), 'masterVolume', { type: 'number', min: 0, max: 100 }),
-          settingField(T('Положение'), 'overlayPosition', { type: 'select', options: [['center', T('По центру')], ['top', T('Сверху')], ['bottom', T('Снизу')], ['left', T('Слева')], ['right', T('Справа')], ['top-left', T('Сверху слева')], ['top-right', T('Сверху справа')], ['bottom-left', T('Снизу слева')], ['bottom-right', T('Снизу справа')]] }),
-          settingField(T('Макс. ширина, % экрана'), 'overlayMaxWidthPct', { type: 'number', min: 5, max: 100 }),
-          settingField(T('Макс. высота, % экрана'), 'overlayMaxHeightPct', { type: 'number', min: 5, max: 100 })),
-        settingField(T('Показывать подпись'), 'showCaption', { type: 'check' }),
-        settingField(T('Шаблон подписи'), 'captionTemplate', { hint: T('{user} — зритель, {reward} — награда, {input} — текст зрителя, {cost} — стоимость') }))));
+    if (tab === 'main') {
+      var langSel = h('select', { 'aria-label': 'Language / Язык' }, I18N.languages.map(function (l) { return h('option', { value: l.id, text: l.name, selected: I18N.lang() === l.id }); }));
+      langSel.addEventListener('change', function () { setLanguage(langSel.value); });
+      var cur = S.settings.panelTheme || 'amethyst';
+      var palettes = h('div', { class: 'palette-pick', role: 'group' }, [['amethyst', T('Аметист')], ['midnight', T('Полночь')], ['graphite', T('Графит')]].map(function (p) {
+        return h('button', { class: cur === p[0] ? 'active' : '', 'aria-pressed': cur === p[0] ? 'true' : 'false', onclick: function () {
+          saveSetting('panelTheme', p[0]).then(function () { applyPalette(); renderSettings(); });
+        } }, h('i', { class: 'p-' + p[0] }), p[1]);
+      }));
+      root.appendChild(h('div', { class: 'grid cols-2' },
+        h('div', { class: 'stack' },
+          h('div', { class: 'card' }, h('h2', { text: 'Язык / Language' }),
+            h('div', { class: 'field', style: 'margin:0' }, langSel,
+              h('span', { class: 'hint', text: T('Язык панели, сообщений бота, служебного текста overlay и меню в трее. Применяется сразу, без перезапуска.') }))),
+          h('div', { class: 'card' }, h('h2', { text: T('Цвета панели') }), palettes,
+            h('p', { class: 'hint', style: 'margin:10px 0 0', text: T('Палитра панели и дока в OBS. Цвета состояний (зелёный, жёлтый, красный) одинаковые во всех вариантах.') }))),
+        h('div', { class: 'card' }, h('h2', { text: T('Работа бота') }),
+          settingField(T('Режим работы'), 'mode', { type: 'select', options: [['active', T('Активный — воспроизводить оповещения')], ['observe', T('Наблюдение — только записывать (для параллельной работы с Sound Alerts)')]] }),
+          settingField(T('Только звук для всех наград (видео выключено)'), 'audioOnly', { type: 'check', hint: T('Быстрый общий выключатель видео, например для игровых сцен. Настройки наград при этом не меняются.') }),
+          h('div', { style: 'margin-top:12px' }, settingField(T('Хранить историю, дней'), 'historyRetentionDays', { type: 'number', min: 1 })))));
+    } else if (tab === 'twitch') {
+      root.appendChild(h('div', { class: 'grid cols-2' },
+        h('div', { class: 'card' }, h('h2', { text: T('Вход в Twitch') }), h('div', { id: 'auth-box' })),
+        h('div', { class: 'card' }, h('h2', { text: T('Приложение Twitch') }),
+          h('div', { id: 'clientid-box' }, clientIdField()),
+          settingField(T('Разрешить боту управлять наградами'), 'allowManageRewards', { type: 'check', hint: T('Нужно для создания копий наград и возврата баллов при сбое. Без этого бот только читает события.') }))));
+      renderAuthBox();
+    } else if (tab === 'alerts') {
+      root.appendChild(h('div', { class: 'grid cols-2' },
+        h('div', { class: 'stack' },
+          h('div', { class: 'card' }, h('h2', { text: T('Вид оповещений') }),
+            h('div', { class: 'form-grid' },
+              settingField(T('Общая громкость, %'), 'masterVolume', { type: 'number', min: 0, max: 100 }),
+              settingField(T('Положение'), 'overlayPosition', { type: 'select', options: [['center', T('По центру')], ['top', T('Сверху')], ['bottom', T('Снизу')], ['left', T('Слева')], ['right', T('Справа')], ['top-left', T('Сверху слева')], ['top-right', T('Сверху справа')], ['bottom-left', T('Снизу слева')], ['bottom-right', T('Снизу справа')]] }),
+              settingField(T('Макс. ширина, % экрана'), 'overlayMaxWidthPct', { type: 'number', min: 5, max: 100 }),
+              settingField(T('Макс. высота, % экрана'), 'overlayMaxHeightPct', { type: 'number', min: 5, max: 100 })),
+            settingField(T('Показывать подпись'), 'showCaption', { type: 'check' }),
+            h('div', { style: 'margin-top:10px' }, settingField(T('Шаблон подписи'), 'captionTemplate', { hint: T('{user} — зритель, {reward} — награда, {input} — текст зрителя, {cost} — стоимость') })),
+            h('p', { class: 'hint', style: 'margin:0' }, T('Источник оповещений в программе для стрима — на странице '), goLink('OBS / Streamlabs', 'obs'), '.')),
+          h('div', { class: 'card' }, h('h2', { text: T('Поведение') }),
+            settingField(T('Восстанавливать пропущенные события после обрыва связи'), 'recoverMissed', { type: 'check', hint: T('Работает только для наград, созданных этим ботом (ограничение Twitch).') }),
+            settingField(T('Отмечать выполненными и возвращать баллы при сбое'), 'manageRedemptionStatus', { type: 'check', hint: T('Только для наград, созданных ботом и не пропускающих очередь запросов.') }),
+            settingField(T('Награды бота — только во время эфира'), 'rewardsOnlyLive', { type: 'check', hint: T('Когда стрим заканчивается, бот ставит свои награды на паузу в Twitch, а при начале эфира снимает. Зрители не тратят баллы, пока вас нет. Награды, которые вы поставили на паузу сами, бот не трогает.') }),
+            settingField(T('Шаутаут рейдеру автоматически'), 'autoShoutout', { type: 'check', hint: T('Через 5 секунд после рейда в чате появится карточка канала рейдера. Кнопка «📣 Шаутаут» у рейда в ленте дока работает и без этой галочки.') }))),
+        h('div', { class: 'card' }, h('h2', { text: T('Очередь и защита от спама') }),
+          h('div', { class: 'form-grid' },
+            settingField(T('Задержка перед показом, с'), 'delayBeforeMs', { type: 'number', scale: 1000, min: 0, step: 0.1 }),
+            settingField(T('Пауза между оповещениями, с'), 'gapBetweenMs', { type: 'number', scale: 1000, min: 0, step: 0.1 }),
+            settingField(T('Максимальная длина очереди'), 'maxQueueLength', { type: 'number', min: 1, max: 500 }),
+            settingField(T('Не проигрывать старше, с'), 'maxItemAgeSec', { type: 'number', min: 10, hint: T('Слишком старые оповещения отбрасываются') }),
+            settingField(T('Антиспам: один зритель не чаще, с'), 'userCooldownSec', { type: 'number', min: 0, hint: T('0 — без ограничения') }),
+            settingField(T('Длительность картинки/GIF, с'), 'defaultImageDurationMs', { type: 'number', scale: 1000, min: 0.5, step: 0.5 }),
+            settingField(T('Максимальная длительность, с'), 'maxDurationMs', { type: 'number', scale: 1000, min: 1, max: 3600, hint: T('Видео и звук длиннее обрываются на этом месте (до 3600 с = 1 час)') })))));
+    } else if (tab === 'keys') {
+      var keyField = function (label, key, hint) {
+        var inp = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: S.settings[key] ? T('сохранён ({0}) — вставьте новый, чтобы заменить', [S.settings[key]]) : T('вставьте ключ') });
+        inp.addEventListener('change', function () { if (inp.value.trim()) saveSetting(key, inp.value.trim()).then(load); });
+        return h('div', { class: 'field' }, h('label', { text: label }),
+          h('div', { class: 'copy-field' }, inp, S.settings[key] ? h('button', { class: 'danger', text: T('Удалить'), onclick: function () {
+            if (confirm(T('Удалить ключ «{0}»? Поиск в этом сервисе перестанет работать.', [label]))) saveSetting(key, '').then(load);
+          } }) : null),
+          h('span', { class: 'hint' }, hint));
+      };
+      root.appendChild(h('div', { class: 'grid cols-2' },
+        h('div', { class: 'card' }, h('h2', { text: T('Поиск медиа') }),
+          keyField(T('Ключ Klipy (мемы, клипы, GIF)'), 'klipyApiKey', h('span', null, T('Бесплатно: '), h('a', { href: 'https://partner.klipy.com', target: '_blank', rel: 'noopener noreferrer', text: 'partner.klipy.com' }), ' → API Keys.')),
+          keyField(T('Ключ Freesound (звуки)'), 'freesoundApiKey', h('span', null, T('Бесплатно: '), h('a', { href: 'https://freesound.org/apiv2/apply', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org/apiv2/apply' }), T(' → строка «Client secret / Api key».'))),
+          settingField(T('Фильтр контента Klipy'), 'klipyContentFilter', { type: 'select', options: [['high', T('Строгий')], ['medium', T('Средний (рекомендуется для Twitch)')], ['low', T('Мягкий')], ['off', T('Выключен')]] }),
+          h('p', { class: 'small muted', text: T('Ключи хранятся только на этом компьютере, в журнал не записываются и в панели показываются не полностью.') })),
+        h('div', { class: 'card' }, h('h2', { text: T('Как это работает') }),
+          h('ul', { class: 'small muted' },
+            h('li', { text: T('Klipy: мемы не скачиваются (правила Klipy) — во время стрима OBS или Streamlabs загружает их с сервера Klipy. Назначьте награде запасной звук на случай сбоя.') }),
+            h('li', { text: T('Freesound: звуки скачиваются в медиатеку и работают без интернета. Автор и лицензия сохраняются.') }),
+            h('li', { text: T('По ссылке: прямой адрес файла скачивается в медиатеку. Ссылки на этот компьютер и локальную сеть запрещены.') })),
+          h('p', { class: 'small muted', style: 'margin:12px 0 0' }, T('Пароль OBS WebSocket — на странице '), goLink('OBS / Streamlabs', 'obs'), T(', токен Telegram — в '), goLink(T('«Стрим» → «Telegram»'), 'stream', 'telegram'), '.'))));
+    } else {
+      var autostart = toggle(!!S.autostart, function (v, el) {
+        act(post('/api/autostart', { enabled: v }), v ? T('Автозапуск включён') : T('Автозапуск выключен')).then(null, function () { el.checked = !v; });
+      }, T('Запускать бота вместе с Windows'));
+      root.appendChild(h('div', { class: 'grid cols-2' },
+        h('div', { class: 'stack' }, updatesCard()),
+        h('div', { class: 'stack' },
+          h('div', { class: 'card' }, h('h2', { text: T('Система') }),
+            opt(T('Запускать бота вместе с Windows'), null, autostart),
+            h('div', { style: 'margin-top:12px' }, settingField(T('Локальный порт'), 'port', { type: 'number', min: 1024, max: 65535, hint: T('Изменение вступит в силу после перезапуска. Сервер доступен только с этого компьютера (127.0.0.1).') })),
+            h('div', { class: 'row' },
+              btn('folder', T('Папка логов'), { onclick: function () { act(post('/api/open-folder', { which: 'logs' })); } }),
+              btn('folder', T('Папка данных'), { onclick: function () { act(post('/api/open-folder', { which: 'data' })); } }),
+              btn('power', T('Остановить бота'), { class: 'danger', onclick: function () { if (confirm(T('Остановить бота? Оповещения перестанут работать до следующего запуска.'))) act(post('/api/shutdown'), T('Бот останавливается')); } })),
+            h('p', { class: 'small muted', style: 'margin:12px 0 0', text: T('Версия {0} · работает {1} мин', [S.status.version, Math.round(S.status.uptimeSec / 60)]) })),
+          backupCard())));
+    }
+  }
 
-    root.appendChild(h('div', { class: 'grid cols-2' },
-      h('div', { class: 'card' }, h('h2', { text: T('Очередь и защита от спама') }),
-        h('div', { class: 'form-grid' },
-          settingField(T('Задержка перед показом, с'), 'delayBeforeMs', { type: 'number', scale: 1000, min: 0, step: 0.1 }),
-          settingField(T('Пауза между оповещениями, с'), 'gapBetweenMs', { type: 'number', scale: 1000, min: 0, step: 0.1 }),
-          settingField(T('Максимальная длина очереди'), 'maxQueueLength', { type: 'number', min: 1, max: 500 }),
-          settingField(T('Не проигрывать старше, с'), 'maxItemAgeSec', { type: 'number', min: 10, hint: T('Слишком старые оповещения отбрасываются') }),
-          settingField(T('Антиспам: один зритель не чаще, с'), 'userCooldownSec', { type: 'number', min: 0, hint: T('0 — без ограничения') }),
-          settingField(T('Длительность картинки/GIF, с'), 'defaultImageDurationMs', { type: 'number', scale: 1000, min: 0.5, step: 0.5 }),
-          settingField(T('Максимальная длительность, с'), 'maxDurationMs', { type: 'number', scale: 1000, min: 1, max: 3600, hint: T('Видео и звук длиннее обрываются на этом месте (до 3600 с = 1 час)') }))),
-      h('div', { class: 'card' }, h('h2', { text: T('Поведение') }),
-        settingField(T('Только звук для всех наград (видео выключено)'), 'audioOnly', { type: 'check', hint: T('Быстрый общий выключатель видео, например для игровых сцен. Настройки наград при этом не меняются.') }),
-        settingField(T('Режим работы'), 'mode', { type: 'select', options: [['active', T('Активный — воспроизводить оповещения')], ['observe', T('Наблюдение — только записывать (для параллельной работы с Sound Alerts)')]] }),
-        settingField(T('Восстанавливать пропущенные события после обрыва связи'), 'recoverMissed', { type: 'check', hint: T('Работает только для наград, созданных этим ботом (ограничение Twitch).') }),
-        settingField(T('Отмечать выполненными и возвращать баллы при сбое'), 'manageRedemptionStatus', { type: 'check', hint: T('Только для наград, созданных ботом и не пропускающих очередь запросов.') }),
-        settingField(T('Шаутаут рейдеру автоматически'), 'autoShoutout', { type: 'check', hint: T('Через 5 секунд после рейда в чате появится карточка канала рейдера. Кнопка «📣 Шаутаут» у рейда в ленте дока работает и без этой галочки.') }),
-        settingField(T('Награды бота — только во время эфира'), 'rewardsOnlyLive', { type: 'check', hint: T('Когда стрим заканчивается, бот ставит свои награды на паузу в Twitch, а при начале эфира снимает. Зрители не тратят баллы, пока вас нет. Награды, которые вы поставили на паузу сами, бот не трогает.') }),
-        settingField(T('Хранить историю, дней'), 'historyRetentionDays', { type: 'number', min: 1 }))));
+  // ---------------- Озвучка (2.0.0: отдельный раздел) ----------------
+  function renderVoice() {
+    var root = clear($('page-voice'));
+    var on = toggle(!!S.settings.ttsEnabled, function (v) { saveSetting('ttsEnabled', v).then(renderVoice); }, T('Озвучка включена'));
+    root.appendChild(pageHead(T('Озвучка'), T('Награда с галочкой «Озвучить текст зрителя» читает вслух то, что зритель написал при получении награды. Голоса встроены в Windows, интернет не нужен.'),
+      [h('label', { class: 'check', style: 'margin:0' }, h('span', { class: S.settings.ttsEnabled ? '' : 'muted', text: S.settings.ttsEnabled ? T('Озвучка включена') : T('Озвучка выключена') }), on)]));
+    root.appendChild(h('p', { class: 'hint', style: 'margin:-8px 0 16px', text: T('Twitch советует выключать озвучку, когда вы отходите от компьютера: за то, что звучит на стриме, отвечает стример. Быстрый выключатель — кнопка 🗣 в доке у оповещений.') }));
 
-    var keyField = function (label, key, hint) {
-      var inp = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: S.settings[key] ? T('сохранён ({0}) — вставьте новый, чтобы заменить', [S.settings[key]]) : T('вставьте ключ') });
-      inp.addEventListener('change', function () { if (inp.value.trim()) saveSetting(key, inp.value.trim()).then(load); });
-      return h('div', { class: 'field' }, h('label', { text: label }),
-        h('div', { class: 'copy-field' }, inp, S.settings[key] ? h('button', { class: 'danger', text: T('Удалить'), onclick: function () {
-          if (confirm(T('Удалить ключ «{0}»? Поиск в этом сервисе перестанет работать.', [label]))) saveSetting(key, '').then(load);
-        } }) : null),
-        h('span', { class: 'hint' }, hint));
-    };
-    root.appendChild(h('div', { class: 'grid cols-2' },
-      h('div', { class: 'card' }, h('h2', { text: T('Поиск медиа') }),
-        keyField(T('Ключ Klipy (мемы, клипы, GIF)'), 'klipyApiKey', h('span', null, T('Бесплатно: '), h('a', { href: 'https://partner.klipy.com', target: '_blank', rel: 'noopener noreferrer', text: 'partner.klipy.com' }), ' → API Keys.')),
-        keyField(T('Ключ Freesound (звуки)'), 'freesoundApiKey', h('span', null, T('Бесплатно: '), h('a', { href: 'https://freesound.org/apiv2/apply', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org/apiv2/apply' }), T(' → строка «Client secret / Api key».'))),
-        settingField(T('Фильтр контента Klipy'), 'klipyContentFilter', { type: 'select', options: [['high', T('Строгий')], ['medium', T('Средний (рекомендуется для Twitch)')], ['low', T('Мягкий')], ['off', T('Выключен')]] }),
-        h('p', { class: 'small muted', text: T('Ключи хранятся только на этом компьютере, в журнал не записываются и в панели показываются не полностью.') })),
-      h('div', { class: 'card' }, h('h2', { text: T('Как это работает') }),
-        h('ul', { class: 'small' },
-          h('li', { text: T('Klipy: мемы не скачиваются (правила Klipy) — во время стрима OBS или Streamlabs загружает их с сервера Klipy. Назначьте награде запасной звук на случай сбоя.') }),
-          h('li', { text: T('Freesound: звуки скачиваются в медиатеку и работают без интернета. Автор и лицензия сохраняются.') }),
-          h('li', { text: T('По ссылке: прямой адрес файла скачивается в медиатеку. Ссылки на этот компьютер и локальную сеть запрещены.') })))));
-
-    // Озвучка текста зрителя (1.7.0).
     var voiceSel = h('select', { disabled: true }, h('option', { value: '', text: T('Загрузка…') }));
     var voiceEnSel = h('select', { disabled: true }, h('option', { value: '', text: T('Загрузка…') }));
     var enHint = h('span', { class: 'hint' });
@@ -1329,12 +1540,12 @@
         } }));
       } else {
         if (st.error) piperBox.appendChild(h('div', { class: 'small bad', text: st.error }));
-        piperBox.appendChild(h('button', { class: 'small primary', text: T('Скачать голоса Piper (≈{0} МБ)', [st.sizeMb]), onclick: function () {
+        piperBox.appendChild(btn('download', T('Скачать голоса Piper (≈{0} МБ)', [st.sizeMb]), { class: 'small primary', onclick: function () {
           act(post('/api/tts/piper/install')).then(function (r) { renderPiper(r); poll(); });
         } }));
         if (st.error) {
           // Ручная установка: скачать в браузере (например, с VPN) и положить в папку бота — бот проверит файлы.
-          piperBox.appendChild(h('details', { class: 'small' }, h('summary', { text: T('Скачать голоса вручную') }),
+          piperBox.appendChild(h('details', { class: 'small how' }, h('summary', null, icon('right'), T('Скачать голоса вручную')),
             h('ol', null,
               h('li', null, T('Скачайте в браузере эти файлы:'), h('ul', null, st.links.map(function (l) { return h('li', null, h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer', text: l.name })); }))),
               h('li', null, T('Положите их в папку:'), copyField(st.folder, T('Путь скопирован'))),
@@ -1345,7 +1556,7 @@
     var poll = function () {
       clearTimeout(piperTimer);
       piperTimer = setTimeout(function () {
-        if (page !== 'settings') return;
+        if (page !== 'voice') return;
         api('GET', '/api/tts/piper').then(function (st) { renderPiper(st); if (st.busy) poll(); else if (st.installed) render(); }, function () { /* */ });
       }, 1500);
     };
@@ -1354,63 +1565,97 @@
     var banned = h('textarea', { rows: 2, placeholder: T('слово1, слово2') });
     banned.value = S.settings.ttsBannedWords || '';
     banned.addEventListener('change', function () { saveSetting('ttsBannedWords', banned.value); });
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Озвучка текста зрителя') }),
-      h('p', { class: 'small muted', text: T('Награда с галочкой «Озвучить текст зрителя» читает вслух то, что зритель написал при получении награды. Голоса встроены в Windows, интернет не нужен.') }),
-      settingField(T('Озвучка включена'), 'ttsEnabled', { type: 'check', hint: T('Twitch советует выключать озвучку, когда вы отходите от компьютера: за то, что звучит на стриме, отвечает стример. Быстрый выключатель — кнопка 🗣 в доке у оповещений.') }),
-      h('div', { class: 'reward-actions' }, h('button', { class: 'small primary', text: T('Создать награду для озвучки в Twitch…'), onclick: function () {
-        var c = prompt(T('Стоимость награды «🗣 Скажи голосом» в баллах:'), '300');
-        if (!c) return;
-        act(post('/api/tts/reward', { cost: Number(c) }), T('Награда создана — она уже в разделе «Награды»'));
-      } })),
-      h('div', { class: 'form-grid' },
-        h('div', { class: 'field' }, h('label', { text: T('Голос') }), voiceSel, h('span', { class: 'hint', text: T('Ещё голоса: Параметры Windows → Время и язык → Речь → Добавить голоса') })),
-        settingField(T('Скорость, %'), 'ttsRate', { type: 'number', min: 50, max: 300 }),
-        settingField(T('Громкость, %'), 'ttsVolume', { type: 'number', min: 0, max: 100 }),
-        settingField(T('Не длиннее, символов'), 'ttsMaxChars', { type: 'number', min: 20, max: 500 })),
-      piperBox,
-      h('div', { class: 'form-grid' },
-        h('div', { class: 'field' }, h('label', { text: T('Голос для английского текста') }), voiceEnSel, enHint),
-        settingField(T('Что читать по-английски'), 'ttsTemplateEn', { hint: T('Если текст на английском') })),
-      settingField(T('Что читать'), 'ttsTemplate', { hint: T('{user} — ник зрителя, {text} — его текст') }),
-      h('div', null, settingField(T('Зритель может выбрать голос'), 'ttsViewerVoice', { type: 'check', hint: T('Если текст начинается с имени в квадратных скобках — [Павел] привет! — его прочитает этот голос.') }), h('div', { class: 'hint small muted', style: 'margin:-6px 0 10px 24px' }, viewerHint)),
-      settingField(T('Заменять мат на «пи-ип»'), 'ttsFilter', { type: 'check', hint: T('Ссылки всегда читаются как «ссылка», длинные повторы букв сокращаются.') }),
-      h('div', { class: 'field' }, h('label', { text: T('Свои запрещённые слова (через запятую)') }), banned),
-      h('div', { class: 'field' }, h('label', { text: T('Проверить голос') }), h('div', { class: 'copy-field' }, ttsTest,
-        h('button', { class: 'primary', text: T('▶ Озвучить'), onclick: function () { act(post('/api/tts/test', { text: ttsTest.value }), T('Добавлено в очередь')); } })))));
 
-    var autostart = h('input', { type: 'checkbox', checked: !!S.autostart, onchange: function () {
-      act(post('/api/autostart', { enabled: autostart.checked }), autostart.checked ? T('Автозапуск включён') : T('Автозапуск выключен')).then(null, function () { autostart.checked = !autostart.checked; });
-    } });
-    var appSel = h('select', null, ['obs', 'streamlabs'].map(function (k) { return h('option', { value: k, text: APPS[k].name, selected: streamApp() === k }); }));
-    appSel.addEventListener('change', function () { saveSetting('streamApp', appSel.value).then(function () { renderSettings(); }); });
-    var isSl = streamApp() === 'streamlabs';
     root.appendChild(h('div', { class: 'grid cols-2' },
-      h('div', { class: 'card' }, h('h2', { text: T('Программа для стрима') }),
-        streamlabsDetected(S.status) ? switchToStreamlabsBox() : null,
-        h('div', { class: 'field' }, h('label', { text: T('Где идёт стрим') }), appSel,
-          h('span', { class: 'hint', text: T('Overlay работает в обеих программах одинаково. Выбор влияет на кнопку запуска, резервную копию сцен и подсказки.') })),
-        isSl ? settingField(T('Путь к Streamlabs Desktop («Streamlabs OBS.exe»)'), 'streamlabsExePath', { hint: T('Оставьте пустым — бот сам найдёт программу в Program Files.') })
-          : settingField(T('Путь к OBS (obs64.exe)'), 'obsExePath'),
-        isSl ? settingField(T('Папка настроек Streamlabs (slobs-client)'), 'streamlabsConfigDir')
-          : settingField(T('Папка настроек OBS'), 'obsConfigDir'),
-        settingField(T('Запускать {0} при автозапуске бота', [appShort()]), 'launchObsWithBot', { type: 'check' }),
-        h('div', { class: 'row' },
-          h('button', { text: T('Резервная копия сцен {0}', [appShort()]), onclick: function () { act(post('/api/obs/backup')).then(function (r) { toast(T('Копия сохранена: {0}', [r.dir]), 'ok'); }); } }),
-          h('button', { text: T('Запустить {0}', [appShort()]), onclick: function () { act(post('/api/obs/launch')).then(function (r) { toast(r.already ? T('{0} уже запущен', [appName()]) : T('{0} запускается', [appName()]), 'ok'); }); } }),
-          h('button', { text: T('Папка копий'), onclick: function () { act(post('/api/open-folder', { which: 'backups' })); } }))),
-      h('div', { class: 'card' }, h('h2', { text: T('Система') }),
-        h('label', { class: 'check' }, autostart, T('Запускать бота вместе с Windows')),
-        settingField(T('Локальный порт'), 'port', { type: 'number', min: 1024, max: 65535, hint: T('Изменение вступит в силу после перезапуска. Сервер доступен только с этого компьютера (127.0.0.1).') }),
-        h('div', { class: 'row' },
-          h('button', { text: T('Папка логов'), onclick: function () { act(post('/api/open-folder', { which: 'logs' })); } }),
-          h('button', { text: T('Папка данных'), onclick: function () { act(post('/api/open-folder', { which: 'data' })); } }),
-          h('button', { class: 'danger', text: T('Остановить бота'), onclick: function () { if (confirm(T('Остановить бота? Оповещения перестанут работать до следующего запуска.'))) act(post('/api/shutdown'), T('Бот останавливается')); } })),
-        h('p', { class: 'small muted', style: 'margin-top:10px', text: T('Версия {0} · работает {1} мин', [S.status.version, Math.round(S.status.uptimeSec / 60)]) }))));
-    renderAuthBox();
+      h('div', { class: 'card' }, h('h2', { text: T('Проверка перед озвучкой') }),
+        settingField(T('Проверять текст перед озвучкой'), 'ttsReview', { type: 'select', options: [['off', T('Нет — озвучивать сразу')], ['new', T('Только у новых зрителей (их текст ещё ни разу не озвучивался)')], ['all', T('Всегда')]],
+          hint: T('Текст появится в доке OBS и на Пульте с кнопками «Озвучить», «Без озвучки» и «Отклонить» (оповещения не будет, баллы вернутся зрителю). Пока вы решаете, остальные оповещения играют как обычно.') })),
+      h('div', { class: 'card' }, h('h2', { text: T('Награда для озвучки') }),
+        h('p', { class: 'small muted', text: T('Награда «🗣 Скажи голосом» — с вводом текста и перезарядкой 30 секунд. Появится в разделе «Награды» уже включённой.') }),
+        btn('plus', T('Создать награду для озвучки в Twitch…'), { class: 'primary', onclick: function () {
+          var c = prompt(T('Стоимость награды «🗣 Скажи голосом» в баллах:'), '300');
+          if (!c) return;
+          act(post('/api/tts/reward', { cost: Number(c) }), T('Награда создана — она уже в разделе «Награды»'));
+        } }))));
+    root.appendChild(h('div', { class: 'grid cols-2' },
+      h('div', { class: 'stack' },
+        h('div', { class: 'card' }, h('h2', { text: T('Голоса') }),
+          h('div', { class: 'form-grid' },
+            h('div', { class: 'field' }, h('label', { text: T('Голос') }), voiceSel, h('span', { class: 'hint', text: T('Ещё голоса: Параметры Windows → Время и язык → Речь → Добавить голоса') })),
+            h('div', { class: 'field' }, h('label', { text: T('Голос для английского текста') }), voiceEnSel, enHint)),
+          piperBox,
+          h('div', { class: 'form-grid' },
+            settingField(T('Скорость, %'), 'ttsRate', { type: 'number', min: 50, max: 300 }),
+            settingField(T('Громкость, %'), 'ttsVolume', { type: 'number', min: 0, max: 100 }),
+            settingField(T('Не длиннее, символов'), 'ttsMaxChars', { type: 'number', min: 20, max: 500 }))),
+        h('div', { class: 'card' }, h('h2', { text: T('Проверить голос') }),
+          h('div', { class: 'copy-field' }, ttsTest,
+            btn('play', T('Озвучить'), { class: 'primary', onclick: function () { act(post('/api/tts/test', { text: ttsTest.value }), T('Добавлено в очередь')); } })))),
+      h('div', { class: 'stack' },
+        h('div', { class: 'card' }, h('h2', { text: T('Что читать') }),
+          settingField(T('Что читать'), 'ttsTemplate', { hint: T('{user} — ник зрителя, {text} — его текст') }),
+          settingField(T('Что читать по-английски'), 'ttsTemplateEn', { hint: T('Если текст на английском') }),
+          settingField(T('Зритель может выбрать голос'), 'ttsViewerVoice', { type: 'check', hint: T('Если текст начинается с имени в квадратных скобках — [Павел] привет! — его прочитает этот голос.') }),
+          h('div', { class: 'hint' }, viewerHint)),
+        h('div', { class: 'card' }, h('h2', { text: T('Фильтр') }),
+          settingField(T('Заменять мат на «пи-ип»'), 'ttsFilter', { type: 'check', hint: T('Ссылки всегда читаются как «ссылка», длинные повторы букв сокращаются.') }),
+          h('div', { class: 'field', style: 'margin:12px 0 0' }, h('label', { text: T('Свои запрещённые слова (через запятую)') }), banned)))));
+  }
+
+  // ---------------- Резервная копия (1.9.0) ----------------
+  function downloadBackup(name) {
+    var a = h('a', { href: '/api/backup/download/' + encodeURIComponent(name), download: name });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function backupCard() {
+    var listBox = h('div', { class: 'backup-list' });
+    var refresh = function () {
+      api('GET', '/api/backup/list').then(function (r) {
+        clear(listBox);
+        if (!r.backups.length) return;
+        listBox.appendChild(h('div', { class: 'small muted', text: T('Копии на этом компьютере (папка data\\backups):') }));
+        r.backups.slice(0, 8).forEach(function (b) {
+          listBox.appendChild(h('div', { class: 'list-item small' },
+            h('span', { class: 'grow', text: fmtDateTime(b.createdAt) + ' · ' + fmtSize(b.size) + (b.kind === 'before-restore' ? ' · ' + T('перед восстановлением') : '') }),
+            h('button', { class: 'small', text: T('Скачать'), onclick: function () { downloadBackup(b.name); } })));
+        });
+      }, function () { /* нет связи */ });
+    };
+    var fileInp = h('input', { type: 'file', accept: '.zip,application/zip', style: 'display:none' });
+    fileInp.addEventListener('change', function () {
+      var f = fileInp.files && fileInp.files[0];
+      fileInp.value = '';
+      if (!f) return;
+      if (!confirm(T('Восстановить данные из «{0}»?\n\nНастройки, награды, медиатека, история и счётчики заменятся данными из копии. Текущие данные бот сначала сохранит в отдельную копию. После этого бот перезапустится.', [f.name]))) return;
+      toast(T('Загрузка и проверка копии…'));
+      api('PUT', '/api/backup/restore', f, { 'Content-Type': 'application/zip' }).then(function (r) {
+        toast(r.restarting ? T('Копия проверена, бот перезапускается — панель обновится сама.') : T('Копия проверена. Перезапустите бота — данные заменятся при запуске.'), 'ok');
+      }, function (e) { toast(e.message, 'bad'); });
+    });
+    refresh();
+    return h('div', { class: 'card' }, h('h2', { text: T('Резервная копия') }),
+      h('p', { class: 'small', text: T('Один файл со всем, что вы настроили: награды и их звуки и видео, медиатека, настройки, история стримов, счётчики. Пригодится при переустановке Windows, переезде на другой компьютер или если что-то сломалось.') }),
+      h('p', { class: 'small muted', text: T('Не входят: вход в Twitch (войдите заново), голоса Piper (скачаются кнопкой), логи. На другом компьютере ключи Klipy и Freesound, пароль OBS и токен Telegram нужно будет вставить заново — они зашифрованы для этого компьютера.') }),
+      h('div', { class: 'row' },
+        h('button', { class: 'primary', text: T('Скачать резервную копию'), onclick: function (ev) {
+          var b = ev.currentTarget;
+          b.disabled = true;
+          toast(T('Создаю копию…'));
+          act(post('/api/backup/create')).then(function (r) {
+            downloadBackup(r.name);
+            toast(T('Копия создана: {0} ({1}). Сохраните файл в надёжное место — на флешку или в облако.', [r.name, fmtSize(r.size)]), 'ok');
+            refresh();
+          }).then(function () { b.disabled = false; }, function () { b.disabled = false; });
+        } }),
+        h('button', { text: T('Восстановить из копии…'), onclick: function () { fileInp.click(); } }),
+        h('button', { text: T('Папка копий'), onclick: function () { act(post('/api/open-folder', { which: 'botbackups' })); } })),
+      fileInp, listBox);
   }
 
   // ---------------- Журнал ----------------
-  var logTab = 'events';
   // ---------------- Статистика ----------------
   var ST = null;          // ответ /api/stats
   var statsTimer = 0;
@@ -1422,7 +1667,7 @@
   function fileUrl(p) { return p ? 'file:///' + encodeURI(p.replace(/\\/g, '/')) : ''; }
 
   function loadStats() {
-    return api('GET', '/api/stats').then(function (r) { ST = r; if (page === 'stats') renderStatsStatus(); }, function () { /* нет связи — баннер покажет */ });
+    return api('GET', '/api/stats').then(function (r) { ST = r; if (page === 'stream') renderStatsStatus(); if (page === 'obs') renderObsStates(); }, function () { /* нет связи — баннер покажет */ });
   }
 
   /** Состояние подключений (обновляется раз в 4 с, пока страница открыта). */
@@ -1456,7 +1701,7 @@
         : { cls: 'ok', text: T('Подключено'), detail: T('Зрители, чат, фолловеры, подписчики') };
     box.appendChild(h('div', { class: 'grid cols-2' },
       statCard('OBS WebSocket', obsStateView()),
-      statCard('Twitch', tw, a.status === 'ok' && miss.length ? [h('button', { class: 'small primary', text: T('Войти заново'), onclick: function () { act(post('/api/auth/login')).then(function () { location.hash = '#settings'; }); } })] : null)));
+      statCard('Twitch', tw, a.status === 'ok' && miss.length ? [h('button', { class: 'small primary', text: T('Войти заново'), onclick: function () { act(post('/api/auth/login')).then(function () { goTo('settings', 'twitch'); }); } })] : null)));
   }
 
   // История стримов (итоги каждого эфира, 1.6.0).
@@ -1544,113 +1789,304 @@
     }, function () { /* нет связи */ });
   }
 
-  function renderStats() {
-    var root = clear($('page-stats'));
-    root.appendChild(h('h1', { text: T('Статистика стрима') }));
-    if (!ST) { root.appendChild(h('p', { class: 'muted', text: T('Загрузка…') })); loadStats().then(function () { if (page === 'stats') renderStats(); }); return; }
+  function renderStream() {
+    var root = clear($('page-stream'));
+    root.appendChild(pageHead(T('Стрим'), T('Статистика эфира, история стримов, счётчики и итоги в Telegram. Бот считает, пока открыт док в OBS или эта страница.')));
+    root.appendChild(pageTabs([['now', T('Сейчас')], ['history', T('История')], ['counters', T('Счётчики')], ['telegram', 'Telegram']], TABS.stream,
+      function (t) { TABS.stream = t; renderStream(); }));
+    if (!ST) { root.appendChild(h('p', { class: 'muted', text: T('Загрузка…') })); loadStats().then(function () { if (page === 'stream') renderStream(); }); return; }
+    var t = TABS.stream;
+    if (t === 'now') {
+      root.appendChild(h('div', { class: 'grid g-dock' },
+        h('div', { class: 'stack' },
+          h('div', { id: 'stats-status' }),
+          h('div', { class: 'card' }, h('h2', { text: T('Откуда берутся цифры') }),
+            h('ul', { class: 'small muted', style: 'margin:0' },
+              h('li', { text: T('Время эфира, битрейт, разрешение, потери кадров, CPU — из OBS, обновляются каждые 2 секунды.') }),
+              h('li', { text: T('Зрители — счётчик Twitch: сам Twitch обновляет его с задержкой 1–2 минуты, быстрее его не получить никому.') }),
+              h('li', { text: T('«В чате» — кто сейчас на стриме и вошёл в Twitch, даже если молчит (без ботов и вас). Это число обычно появляется раньше счётчика зрителей; новые люди подсвечиваются в доке.') }),
+              h('li', { text: T('Фолловеры, подписки, подарки и рейды приходят от Twitch мгновенно и сразу видны в ленте событий.') }),
+              h('li', { text: T('Микрофон: если во время эфира все микрофоны выключены (или на нуле) либо их не слышно 2 минуты — в доке появится тревога. Лишние микрофоны (например, звук карты захвата) можно убрать значком ⚙.') }),
+              h('li', { text: T('«Впервые» и «×N» у зрителей в чате — бот запоминает, кто сколько стримов заходил (хранится только у вас на компьютере).') })))),
+        h('div', { class: 'stack' },
+          h('h3', { style: 'margin:0', text: T('Предпросмотр док-панели') }),
+          h('iframe', { class: 'stats-dock-frame', src: '/stats/dock?embed=1', title: T('Предпросмотр док-панели') }),
+          h('div', { class: 'small' }, goLink(T('Как добавить док в OBS →'), 'obs')))));
+      renderStatsStatus();
+    } else if (t === 'history') {
+      var hist = h('div');
+      root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('История стримов') }),
+        h('p', { class: 'small muted', text: T('Итоги каждого эфира: зрители, новые фолловеры и подписки, сколько людей было в чате и сколько из них впервые. Бот считает, пока открыт док или эта страница.') }),
+        hist));
+      renderHistory(hist);
+    } else if (t === 'counters') {
+      root.appendChild(h('div', { class: 'card', id: 'counters-card' }));
+      renderCountersCard();
+    } else {
+      root.appendChild(telegramCard());
+    }
+    startStatsPolling();
+  }
+
+  function startStatsPolling() {
+    clearInterval(statsTimer);
+    statsTimer = setInterval(function () { if (page !== 'stream' && page !== 'obs') { clearInterval(statsTimer); return; } loadStats(); }, 4000);
+  }
+
+  // ---------------- OBS / Streamlabs (2.0.0: все источники на одной странице) ----------------
+  function srcCard(ic, title, req, stateId, desc, body) {
+    return h('div', { class: 'src' }, h('div', { class: 'src-ic' }, icon(ic)),
+      h('div', { class: 'src-h' }, h('h2', { text: title }), req ? h('span', { class: 'req', text: req }) : null, h('span', { class: 'badge', id: stateId })),
+      h('div', { class: 'src-d' }, desc),
+      h('div', { class: 'src-body' }, body));
+  }
+  function howTo(summary, content) { return h('details', { class: 'how' }, h('summary', null, icon('right'), summary), content); }
+
+  /** Шаги добавления источника оповещений (2.0.0: из «Помощи» перенесены сюда). */
+  function sourceSteps(ha) {
+    // Файл-загрузчик: источник открывается всегда и ждёт бота, поэтому неважно, что запущено раньше.
+    var fileStep = function (where) {
+      return S.overlayLoader ? h('li', null, T('Поставьте галочку «Локальный файл» (Local file), нажмите «Обзор» (Browse) и выберите файл '), h('code', { text: S.overlayLoader }),
+        T(' — путь можно вставить в строку «Имя файла». Так источник сам дождётся бота, даже если {0} запущен раньше. ', [where]))
+        : h('li', null, 'URL: ', h('code', { text: S.overlayUrl }));
+    };
+    return ha === 'streamlabs' ? h('ol', null,
+      h('li', { text: T('В Streamlabs Desktop: в блоке «Источники» (Sources) нажмите «+» → «Веб-источник» (Browser Source) → «Добавить источник». Название: «Alert Bot».') }),
+      fileStep('Streamlabs'),
+      h('li', { text: T('Ширина 1920, высота 1080 (источник растянется на весь экран; при другом разрешении он масштабируется сам).') }),
+      h('li', { text: T('Включите «Управление аудио через Streamlabs Desktop» (Control audio via Streamlabs Desktop) — звук оповещений появится в «Микшере» и попадёт в эфир. Выключите «Отключать источник, когда не видим» — иначе оповещения ждут, пока сцена неактивна.') }),
+      h('li', { text: T('Чтобы слышать оповещения в наушниках: «Микшер» → шестерёнка → «Дополнительные настройки звука» → у «Alert Bot» в столбце «Мониторинг звука» выберите «Мониторинг и вывод звука».') }),
+      h('li', { text: T('Добавьте ОДИН источник. В других сценах: «+» → «Веб-источник» → «Добавить существующий источник» → «Alert Bot» — иначе звук будет двоиться.') }),
+      h('li', { text: T('Нажмите «Тестовое оповещение» на Пульте. Звук играет сам, без кликов — как и в OBS.') }))
+      : h('ol', null,
+        h('li', { text: T('В OBS: «Источники» → «+» → «Браузер». Название: «Alert Bot».') }),
+        fileStep('OBS'),
+        h('li', { text: T('Ширина 1920, высота 1080 (источник растянется на весь экран; при другом разрешении он масштабируется сам).') }),
+        h('li', { text: T('Включите «Управлять аудио через OBS». Выключите «Отключать источник, когда он не виден» — иначе оповещения ждут, пока сцена неактивна.') }),
+        h('li', { text: T('Чтобы слышать оповещения в наушниках: «Расширенные свойства аудио» → «Мониторинг звука» → «Монитор и вывод».') }),
+        h('li', { text: T('Добавьте ОДИН источник и используйте его во всех сценах через «Добавить существующий» — иначе звук будет двоиться.') }),
+        h('li', { text: T('Нажмите «Тестовое оповещение» на Пульте.') }));
+  }
+
+  function renderObs() {
+    var root = clear($('page-obs'));
+    var cur = streamApp();
+    var appSwitch = h('div', { class: 'tabs', style: 'margin:0', role: 'group', 'aria-label': T('Где идёт стрим') }, ['obs', 'streamlabs'].map(function (k) {
+      return h('button', { class: cur === k ? 'active' : '', 'aria-pressed': cur === k ? 'true' : 'false', text: APPS[k].name, onclick: function () { saveSetting('streamApp', k).then(renderObs); } });
+    }));
+    root.appendChild(pageHead('OBS / Streamlabs', T('Всё, что добавляется в программу для стрима, — на одной странице. Зелёная метка — источник сейчас на связи с ботом.'), [appSwitch]));
+    if (!ST) { root.appendChild(h('p', { class: 'muted', text: T('Загрузка…') })); loadStats().then(function () { if (page === 'obs') renderObs(); }); return; }
     var su = ST.setup;
-    root.appendChild(h('p', { class: 'muted', text: T('Время эфира, зрители, кто в чате, фолловеры, подписчики, битрейт и потери кадров — в реальном времени: в док-панели OBS и, если хотите, прямо на экране стрима.') }));
-    root.appendChild(h('div', { id: 'stats-status' }));
+    var st = S.status;
+    var isSl = cur === 'streamlabs';
+    if (streamlabsDetected(st)) root.appendChild(h('div', { class: 'tips' }, switchToStreamlabsBox()));
+    if (loaderTipNeeded(st)) root.appendChild(h('div', { class: 'tips' }, loaderTipBox()));
 
-    // Живой предпросмотр док-панели.
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Предпросмотр док-панели') }),
-      h('iframe', { class: 'stats-dock-frame', src: '/stats/dock?embed=1', title: T('Предпросмотр док-панели') })));
+    // 1. Оповещения
+    root.appendChild(srcCard('bolt', T('Оповещения'), T('обязательно'), 'st-alerts', T('Показывает звук, видео и подписи наград поверх стрима.'), [
+      S.overlayLoader ? h('div', { class: 'field' }, h('label', { text: T('Файл для источника — рекомендуется') }),
+        copyField(S.overlayLoader, T('Путь скопирован'), btn('folder', T('Папка'), { onclick: function () { act(post('/api/open-folder', { which: 'data' })); } })),
+        h('div', { class: 'hint', text: T('В свойствах источника «Браузер» поставьте галочку «Локальный файл» и выберите этот файл. Тогда неважно, что запущено раньше — {0} или бот: источник дождётся бота и подключится сам.', [appShort()]) })) : null,
+      howTo(T('Как добавить'), h('div', null, sourceSteps(cur),
+        S.overlayLoader ? h('p', { class: 'small muted', style: 'margin:0 0 6px', text: T('Источник уже добавлен по адресу? Откройте его свойства, поставьте «Локальный файл», выберите файл выше и нажмите «ОК» — остальное менять не нужно.') }) : null,
+        h('p', { class: 'small muted', style: 'margin:0', text: T('Не держите источник одновременно в OBS и в Streamlabs: если обе программы открыты, оповещение прозвучит дважды.') }))),
+      howTo(S.overlayLoader ? T('Или адрес (URL) — тогда запускайте бота раньше {0}', [appShort()]) : T('Адрес для Browser Source (OBS Studio или Streamlabs Desktop)'),
+        copyField(S.overlayUrl, T('Адрес скопирован'), h('a', { class: 'btn', href: '/overlay', target: '_blank', text: T('Открыть') }))),
+    ]));
 
-    var hist = h('div');
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('История стримов') }),
-      h('p', { class: 'small muted', text: T('Итоги каждого эфира: зрители, новые фолловеры и подписки, сколько людей было в чате и сколько из них впервые. Бот считает, пока открыт док или эта страница.') }),
-      hist));
-    renderHistory(hist);
-
-    // Док в OBS.
+    // 2. Док статистики
     var dockFile = fileUrl(su.dockLoader);
-    root.appendChild(h('div', { class: 'grid cols-2' },
-      h('div', { class: 'card' }, h('h2', { text: T('1. Док-панель в OBS') }),
+    root.appendChild(srcCard('dock', T('Док статистики'), T('по желанию'), 'st-dock', T('Окно рядом со «Сценами»: время эфира, зрители, чат, очередь, проверка текста, счётчики, метки.'), [
+      dockFile ? copyField(dockFile, T('Адрес скопирован')) : copyField(su.dockUrl, T('Адрес скопирован')),
+      howTo(T('Как добавить'), h('div', null,
         h('ol', null,
           h('li', { text: T('В OBS откройте меню «Док-панели» → «Пользовательские док-панели браузера…».') }),
-          h('li', { text: T('В пустой строке: имя — «Статистика», адрес — скопируйте сюда:') })),
-        dockFile ? copyField(dockFile, T('Адрес скопирован')) : null,
-        h('ol', { start: '3' },
+          h('li', { text: T('В пустой строке: имя — «Статистика», адрес — скопируйте сюда:') }),
           h('li', { text: T('Нажмите «Применить». Появится окно — перетащите его к краю OBS, рядом с «Микшером» или «Сценами».') }),
           h('li', { text: T('Значок ⚙ в доке — какие плитки и разделы показывать и за какими микрофонами следить.') })),
         h('p', { class: 'small' }, h('b', { text: T('Streamlabs Desktop:') + ' ' }),
           T('слева «Editor» → «Layout Editor» → перетащите элемент «Website» в свободное место, вставьте адрес ниже и нажмите «Save Changes». Битрейт и кадры в Streamlabs не показываются.')),
-        h('div', { class: 'field' }, h('label', { text: T('Если адрес файла не открывается — используйте этот (тогда запускайте бота раньше OBS):') }),
-          copyField(su.dockUrl, T('Адрес скопирован'), h('a', { class: 'btn', href: '/stats/dock', target: '_blank', text: T('Открыть') })))),
-      h('div', { class: 'card' }, h('h2', { text: T('2. Подключение к OBS') }),
-        h('p', { class: 'small', text: T('Битрейт, разрешение, потери кадров и точное время эфира бот берёт прямо из OBS — через встроенный в OBS сервер WebSocket. Бот только читает данные и ничего в OBS не меняет.') }),
-        h('ol', null,
-          h('li', { text: T('В OBS: меню «Сервис» → «Настройки сервера WebSocket».') }),
-          h('li', { text: T('Поставьте галочку «Включить сервер WebSocket» и нажмите «Применить».') }),
-          h('li', { text: su.obs.fileFound ? T('Пароль вводить не нужно — бот прочитает его из настроек OBS сам.') : T('Нажмите «Показать сведения о подключении», скопируйте пароль и вставьте ниже.') })),
-        h('div', { class: 'form-grid' },
-          obsPasswordField(su),
-          settingField(T('Порт (0 — как в OBS)'), 'obsWsPort', { type: 'number', min: 0, max: 65535 })))));
+        h('div', { class: 'field', style: 'margin:0' }, h('label', { text: T('Если адрес файла не открывается — используйте этот (тогда запускайте бота раньше OBS):') }),
+          copyField(su.dockUrl, T('Адрес скопирован'), h('a', { class: 'btn', href: '/stats/dock', target: '_blank', text: T('Открыть') }))))),
+    ]));
 
-    // Overlay на экране стрима.
+    // 3. Статистика на экране
     var s = S.settings;
     var chosen = String(s.statsOverlayFields || '').split(',').filter(Boolean);
     var checks = h('div', { class: 'stats-fields' }, OVERLAY_FIELDS.map(function (f) {
       var cb = h('input', { type: 'checkbox', checked: chosen.indexOf(f[0]) >= 0 });
       cb.addEventListener('change', function () {
-        var cur = OVERLAY_FIELDS.map(function (x) { return x[0]; }).filter(function (id) {
+        var next = OVERLAY_FIELDS.map(function (x) { return x[0]; }).filter(function (id) {
           return id === f[0] ? cb.checked : chosen.indexOf(id) >= 0;
         });
-        chosen = cur;
-        saveSetting('statsOverlayFields', cur.join(','));
+        chosen = next;
+        saveSetting('statsOverlayFields', next.join(','));
       });
       return h('label', { class: 'check' }, cb, T(f[1]));
     }));
-    var overlayFile = su.overlayLoader;
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('3. На экране стрима (по желанию)') }),
-      h('p', { class: 'small muted', text: T('Зрители увидят выбранные показатели поверх стрима. Изменения применяются сразу — источник в OBS трогать не нужно.') }),
-      checks,
+    root.appendChild(srcCard('chart', T('Статистика на экране'), T('по желанию'), 'st-overlay', T('Зрители увидят выбранные показатели поверх стрима. Изменения применяются сразу — источник в OBS трогать не нужно.'), [
+      h('div', { class: 'stats-overlay-preview' }, h('iframe', { src: '/stats/overlay?preview=1', title: T('Предпросмотр overlay статистики') })),
+      howTo(T('Что показывать и как'), h('div', null, checks,
+        h('div', { class: 'form-grid' },
+          settingField(T('Расположение'), 'statsOverlayLayout', { type: 'select', options: [['row', T('В строку')], ['column', T('В столбик')]] }),
+          settingField(T('Стиль'), 'statsOverlayStyle', { type: 'select', options: [['dark', T('Тёмный')], ['light', T('Светлый')], ['clear', T('Без фона')], ['twitch', T('Фиолетовый')]] }),
+          settingField(T('Размер, %'), 'statsOverlayScale', { type: 'number', min: 50, max: 300 })),
+        settingField(T('Подписи под числами'), 'statsOverlayLabels', { type: 'check' }))),
+      su.overlayLoader ? copyField(su.overlayLoader, T('Путь скопирован')) : copyField(su.overlayUrl, T('Адрес скопирован')),
+      howTo(T('Как добавить'), h('div', null,
+        h('ol', null,
+          h('li', { text: T('В OBS в нужной сцене: «+» в «Источниках» → «Браузер». Название: «Статистика».') }),
+          h('li', { text: T('Поставьте галочку «Локальный файл» и выберите файл (путь можно вставить в строку «Имя файла»):') }),
+          h('li', { text: T('Ширина 1920, высота 300 (для столбика — 400 × 800). Нажмите «ОК» и перетащите источник куда удобно.') })),
+        su.overlayLoader ? h('div', { class: 'field', style: 'margin:0' }, h('label', { text: T('Или адрес (URL) — тогда запускайте бота раньше OBS:') }), copyField(su.overlayUrl, T('Адрес скопирован'))) : null)),
+    ]));
+
+    // 4. Счётчики на экране
+    root.appendChild(srcCard('hash', T('Счётчики на экране'), T('по желанию'), 'st-counter',
+      h('span', null, T('Числа «Смерти», «Победы» и другие. Сами счётчики, их стиль и размер — в разделе '), goLink(T('«Стрим» → «Счётчики»'), 'stream', 'counters'), '.'), [
+        su.counterLoader ? copyField(su.counterLoader, T('Путь скопирован')) : copyField(su.counterUrl, T('Адрес скопирован')),
+        howTo(T('Как добавить'), h('ol', null,
+          h('li', { text: T('В OBS в нужной сцене: «+» в «Источниках» → «Браузер». Название: «Счётчики».') }),
+          h('li', { text: T('Поставьте галочку «Локальный файл» и выберите файл (путь можно вставить в строку «Имя файла»):') }),
+          h('li', { text: T('Ширина 600, высота 400. Нажмите «ОК» и перетащите источник куда удобно. Счётчики без галочки «на экране» видны только в доке.') }))),
+      ]));
+
+    // 5. Подключение к OBS (WebSocket)
+    root.appendChild(srcCard('layers', T('Подключение к OBS (WebSocket)'), isSl ? T('только OBS Studio') : T('для битрейта, кадров и точного времени'), 'st-ws',
+      T('Битрейт, разрешение, потери кадров и точное время эфира бот берёт прямо из OBS — через встроенный в OBS сервер WebSocket. Бот только читает данные и ничего в OBS не меняет.'),
+      isSl ? [h('p', { class: 'hint', style: 'margin:0', text: obsStateView().detail })] : [
+        h('div', { class: 'form-grid' },
+          obsPasswordField(su),
+          settingField(T('Порт (0 — как в OBS)'), 'obsWsPort', { type: 'number', min: 0, max: 65535 })),
+        howTo(T('Как включить'), h('ol', null,
+          h('li', { text: T('В OBS: меню «Сервис» → «Настройки сервера WebSocket».') }),
+          h('li', { text: T('Поставьте галочку «Включить сервер WebSocket» и нажмите «Применить».') }),
+          h('li', { text: su.obs.fileFound ? T('Пароль вводить не нужно — бот прочитает его из настроек OBS сам.') : T('Нажмите «Показать сведения о подключении», скопируйте пароль и вставьте выше.') }))),
+      ]));
+
+    // Программа для стрима
+    root.appendChild(h('div', { class: 'card', style: 'margin-top:16px' }, h('h2', { text: T('Программа для стрима') }),
+      h('p', { class: 'hint', text: T('Overlay работает в обеих программах одинаково. Выбор влияет на кнопку запуска, резервную копию сцен и подсказки.') }),
       h('div', { class: 'form-grid' },
-        settingField(T('Расположение'), 'statsOverlayLayout', { type: 'select', options: [['row', T('В строку')], ['column', T('В столбик')]] }),
-        settingField(T('Стиль'), 'statsOverlayStyle', { type: 'select', options: [['dark', T('Тёмный')], ['light', T('Светлый')], ['clear', T('Без фона')], ['twitch', T('Фиолетовый')]] }),
-        settingField(T('Размер, %'), 'statsOverlayScale', { type: 'number', min: 50, max: 300 })),
-      settingField(T('Подписи под числами'), 'statsOverlayLabels', { type: 'check' }),
-      h('div', { class: 'stats-overlay-preview' }, h('iframe', { src: '/stats/overlay', title: T('Предпросмотр overlay статистики') })),
-      h('ol', null,
-        h('li', { text: T('В OBS в нужной сцене: «+» в «Источниках» → «Браузер». Название: «Статистика».') }),
-        h('li', { text: T('Поставьте галочку «Локальный файл» и выберите файл (путь можно вставить в строку «Имя файла»):') })),
-      overlayFile ? copyField(overlayFile, T('Путь скопирован')) : copyField(su.overlayUrl, T('Адрес скопирован')),
-      h('ol', { start: '3' },
-        h('li', { text: T('Ширина 1920, высота 300 (для столбика — 400 × 800). Нажмите «ОК» и перетащите источник куда удобно.') })),
-      overlayFile ? h('div', { class: 'field' }, h('label', { text: T('Или адрес (URL) — тогда запускайте бота раньше OBS:') }), copyField(su.overlayUrl, T('Адрес скопирован'))) : null));
+        isSl ? settingField(T('Путь к Streamlabs Desktop («Streamlabs OBS.exe»)'), 'streamlabsExePath', { hint: T('Оставьте пустым — бот сам найдёт программу в Program Files.') })
+          : settingField(T('Путь к OBS (obs64.exe)'), 'obsExePath'),
+        isSl ? settingField(T('Папка настроек Streamlabs (slobs-client)'), 'streamlabsConfigDir')
+          : settingField(T('Папка настроек OBS'), 'obsConfigDir')),
+      settingField(T('Запускать {0} при автозапуске бота', [appShort()]), 'launchObsWithBot', { type: 'check' }),
+      h('div', { class: 'row', style: 'margin-top:12px' },
+        btn('power', T('Запустить {0}', [appShort()]), { onclick: function () { act(post('/api/obs/launch')).then(function (r) { toast(r.already ? T('{0} уже запущен', [appName()]) : T('{0} запускается', [appName()]), 'ok'); }); } }),
+        btn('download', T('Резервная копия сцен {0}', [appShort()]), { onclick: function () { act(post('/api/obs/backup')).then(function (r) { toast(T('Копия сохранена: {0}', [r.dir]), 'ok'); }); } }),
+        btn('folder', T('Папка копий'), { class: 'ghost', onclick: function () { act(post('/api/open-folder', { which: 'backups' })); } }))));
+    renderObsStates();
+    startStatsPolling();
+  }
 
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Откуда берутся цифры') }),
-      h('ul', null,
-        h('li', { text: T('Время эфира, битрейт, разрешение, потери кадров, CPU — из OBS, обновляются каждые 2 секунды.') }),
-        h('li', { text: T('Зрители — счётчик Twitch: сам Twitch обновляет его с задержкой 1–2 минуты, быстрее его не получить никому.') }),
-        h('li', { text: T('«В чате» — кто сейчас на стриме и вошёл в Twitch, даже если молчит (без ботов и вас). Это число обычно появляется раньше счётчика зрителей; новые люди подсвечиваются в доке.') }),
-        h('li', { text: T('Фолловеры, подписки, подарки и рейды приходят от Twitch мгновенно и сразу видны в ленте событий.') }),
-        h('li', { text: T('Микрофон: если во время эфира все микрофоны выключены (или на нуле) либо их не слышно 2 минуты — в доке появится тревога. Лишние микрофоны (например, звук карты захвата) можно убрать значком ⚙.') }),
-        h('li', { text: T('«Впервые» и «×N» у зрителей в чате — бот запоминает, кто сколько стримов заходил (хранится только у вас на компьютере).') }))));
+  /** Метки «на связи» у источников (обновляются при каждом опросе статистики и смене состояния бота). */
+  function renderObsStates() {
+    if (page !== 'obs' || !ST) return;
+    var set = function (id, v) { var el = $(id); if (!el) return; el.className = 'badge ' + (v.cls || ''); el.textContent = v.text; el.title = v.detail || ''; };
+    var ov = overlayView(S.status);
+    set('st-alerts', { cls: ov.cls, text: ov.text, detail: ov.detail });
+    var src = ST.setup.sources || {};
+    var appLabel = function (a) { return a === 'streamlabs' ? 'Streamlabs' : a === 'obs' ? 'OBS' : T('браузер'); };
+    [['st-dock', 'dock'], ['st-overlay', 'overlay'], ['st-counter', 'counter']].forEach(function (x) {
+      var v = src[x[1]];
+      set(x[0], v && v.count ? { cls: 'ok', text: T('На связи · {0}', [appLabel(v.app)]) } : { cls: '', text: T('Не открыт') });
+    });
+    set('st-ws', obsStateView());
+  }
 
-    renderStatsStatus();
-    clearInterval(statsTimer);
-    statsTimer = setInterval(function () { if (page !== 'stats') { clearInterval(statsTimer); return; } loadStats(); }, 4000);
+  // ---------------- Счётчики (1.9.0) ----------------
+  function renderCountersCard() {
+    var card = $('counters-card');
+    if (!card || !ST) return;
+    api('GET', '/api/counters').then(function (r) {
+      // Пока вводят название — не перерисовываем (иначе курсор пропадёт).
+      if (card.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.type === 'text') return;
+      clear(card);
+      var upd = function (id, patch) { return act(post('/api/counters/' + encodeURIComponent(id), patch)); };
+      card.appendChild(h('h2', { text: T('Счётчики на экране (+1 / −1 в доке)') }));
+      card.appendChild(h('p', { class: 'small muted', text: T('Например, «Смерти», «Победы» или «Сколько раз сказал “короче”». Кнопки + и − — в доке OBS, число сразу меняется на экране стрима.') }));
+      var list = h('div', { class: 'counters-edit' });
+      r.counters.forEach(function (c) {
+        var name = h('input', { type: 'text', value: c.name, maxlength: 30, 'aria-label': T('Название') });
+        name.addEventListener('change', function () { upd(c.id, { name: name.value }); });
+        var val = h('input', { type: 'number', value: c.value, class: 'counter-value', 'aria-label': T('Значение') });
+        val.addEventListener('change', function () { upd(c.id, { value: Number(val.value) }); });
+        var show = toggle(!!c.show, function (v) { upd(c.id, { show: v }); }, T('на экране'));
+        list.appendChild(h('div', { class: 'counter-row' }, name,
+          h('button', { class: 'small sq', text: '−', onclick: function () { upd(c.id, { delta: -1 }); } }), val,
+          h('button', { class: 'small sq', text: '+', onclick: function () { upd(c.id, { delta: 1 }); } }),
+          h('button', { class: 'small ghost', text: T('Сбросить'), onclick: function () { if (confirm(T('Обнулить счётчик «{0}»?', [c.name]))) upd(c.id, { value: 0 }); } }),
+          h('label', { class: 'check small' }, show, T('на экране')),
+          h('button', { class: 'small ghost sq', title: T('Удалить'), 'aria-label': T('Удалить'), onclick: function () { if (confirm(T('Удалить счётчик «{0}»?', [c.name]))) act(post('/api/counters/' + encodeURIComponent(c.id) + '/delete')); } }, icon('trash'))));
+      });
+      if (!r.counters.length) list.appendChild(h('div', { class: 'empty', text: T('Счётчиков пока нет.') }));
+      card.appendChild(list);
+      var newName = h('input', { type: 'text', maxlength: 30, placeholder: T('Название, например «Смерти»') });
+      var add = function () { if (!newName.value.trim()) return; act(post('/api/counters', { name: newName.value })).then(function () { newName.value = ''; renderCountersCard(); }); };
+      newName.addEventListener('keydown', function (e) { if (e.key === 'Enter') add(); });
+      card.appendChild(h('div', { class: 'copy-field', style: 'margin:12px 0 16px' }, newName, btn('plus', T('Добавить счётчик'), { class: 'primary', onclick: add })));
+      card.appendChild(h('div', { class: 'form-grid' },
+        settingField(T('Стиль'), 'counterStyle', { type: 'select', options: [['dark', T('Тёмный')], ['light', T('Светлый')], ['clear', T('Без фона')], ['twitch', T('Фиолетовый')]] }),
+        settingField(T('Размер, %'), 'counterScale', { type: 'number', min: 50, max: 300 })));
+      card.appendChild(h('div', { class: 'stats-overlay-preview' }, h('iframe', { src: '/stats/counter?preview=1', title: T('Предпросмотр счётчиков') })));
+      card.appendChild(h('p', { class: 'small', style: 'margin:0' }, goLink(T('Как добавить счётчики на экран стрима →'), 'obs')));
+    }, function () { /* нет связи */ });
+  }
+
+  // ---------------- Итоги в Telegram (1.9.0) ----------------
+  function telegramCard() {
+    var s = S.settings;
+    var token = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: s.telegramToken ? T('сохранён ({0}) — вставьте новый, чтобы заменить', [s.telegramToken]) : T('вставьте токен от @BotFather') });
+    token.addEventListener('change', function () { if (token.value.trim()) saveSetting('telegramToken', token.value.trim()).then(function () { token.value = ''; load(); }); });
+    var chats = h('div');
+    var find = function () {
+      act(post('/api/telegram/chats')).then(function (r) {
+        clear(chats);
+        if (!r.chats.length) { toast(T('Чатов не найдено: напишите своему боту любое сообщение в Telegram и нажмите «Найти чат» ещё раз.'), 'bad'); return; }
+        if (r.chats.length === 1) { saveSetting('telegramChatId', r.chats[0].id).then(load); return; }
+        var sel = h('select', null, h('option', { value: '', text: T('— выберите чат —') }), r.chats.map(function (c) { return h('option', { value: c.id, text: c.title + ' (' + c.type + ')' }); }));
+        sel.addEventListener('change', function () { if (sel.value) saveSetting('telegramChatId', sel.value).then(load); });
+        chats.appendChild(h('div', { class: 'field' }, h('label', { text: T('Найдено несколько чатов — выберите, куда присылать итоги:') }), sel));
+      });
+    };
+    return h('div', { class: 'card' }, h('h2', { text: T('Итоги стрима в Telegram') }),
+      h('p', { class: 'small muted', text: T('После каждого стрима бот пришлёт в Telegram сводку: время эфира, зрители, новые фолловеры и подписки, рейды, кто впервые был в чате, топ наград. Если эфир прервался ненадолго и продолжился, сообщение обновится.') }),
+      h('ol', { class: 'small' },
+        h('li', null, T('В Telegram откройте '), h('a', { href: 'https://t.me/BotFather', target: '_blank', rel: 'noopener noreferrer', text: '@BotFather' }), T(', отправьте /newbot и придумайте имя боту. BotFather пришлёт токен — длинную строку вида 123456789:AAH…')),
+        h('li', { text: T('Вставьте токен сюда:') })),
+      h('div', { class: 'field' }, h('div', { class: 'copy-field' }, token,
+        s.telegramToken ? h('button', { class: 'danger', text: T('Удалить'), onclick: function () { if (confirm(T('Удалить токен бота Telegram? Итоги перестанут приходить.'))) saveSetting('telegramToken', '').then(load); } }) : null)),
+      h('ol', { class: 'small', start: '3' },
+        h('li', { text: T('Откройте своего бота в Telegram, нажмите «Запустить» и напишите ему что угодно. Для канала — добавьте бота в администраторы и опубликуйте в канале любой пост.') }),
+        h('li', { text: T('Нажмите «Найти чат» — бот найдёт чат сам.') })),
+      h('div', { class: 'row' },
+        h('button', { text: T('Найти чат'), disabled: !s.telegramToken, onclick: find }),
+        h('span', { class: 'small ' + (s.telegramChatId ? 'tg-ok' : 'muted'), text: s.telegramChatId ? '✓ ' + T('Чат выбран: {0}', [s.telegramChatId]) : T('Чат не выбран') })),
+      chats,
+      settingField(T('Присылать итоги после каждого стрима'), 'telegramEnabled', { type: 'check', hint: T('Итоги считаются, пока открыт док OBS (или страница «Стрим»).') }),
+      h('button', { class: 'primary', disabled: !s.telegramToken || !s.telegramChatId, text: T('Отправить проверку'), onclick: function () {
+        act(post('/api/telegram/test')).then(function (r) { toast(r.withSummary ? T('Отправлено: проверка и итоги прошлого стрима') : T('Проверка отправлена — посмотрите в Telegram'), 'ok'); });
+      } }));
   }
 
   function renderLog() {
     var root = clear($('page-log'));
-    root.appendChild(h('h1', { text: T('Журнал') }));
-    var tabs = h('div', { class: 'tabs' },
-      h('button', { class: logTab === 'events' ? 'active' : '', text: T('События'), onclick: function () { logTab = 'events'; renderLog(); } }),
-      h('button', { class: logTab === 'redemptions' ? 'active' : '', text: T('Активации наград'), onclick: function () { logTab = 'redemptions'; renderLog(); } }),
-      h('button', { class: logTab === 'tech' ? 'active' : '', text: T('Технический лог'), onclick: function () { logTab = 'tech'; renderLog(); } }));
-    root.appendChild(tabs);
+    root.appendChild(pageHead(T('Журнал'), T('Что происходило с ботом: награды, подключения, ошибки.'),
+      [btn('folder', T('Открыть папку логов'), { class: 'ghost', onclick: function () { act(post('/api/open-folder', { which: 'logs' })); } })]));
+    root.appendChild(pageTabs([['events', T('События')], ['redemptions', T('Активации наград')], ['tech', T('Технический лог')]], TABS.log,
+      function (t) { TABS.log = t; renderLog(); }));
+    var logTab = TABS.log;
     if (logTab === 'events') {
       var tb = h('tbody');
-      S.events.forEach(function (e) { tb.appendChild(h('tr', null, h('td', { class: 'muted small', text: fmtDateTime(e.ts) }), h('td', null, levelBadge(e.level)), h('td', { text: e.message }))); });
-      root.appendChild(h('div', { class: 'card' }, S.events.length ? h('table', null, tb) : h('div', { class: 'empty', text: T('Пусто') })));
+      S.events.forEach(function (e) { tb.appendChild(h('tr', null, h('td', { class: 'muted mono', style: 'white-space:nowrap', text: fmtDateTime(e.ts) }), h('td', null, levelBadge(e.level)), h('td', { text: e.message }))); });
+      root.appendChild(h('div', { class: 'card' }, S.events.length ? h('div', { class: 'table-wrap' }, h('table', null, tb)) : h('div', { class: 'empty', text: T('Пусто') })));
     } else if (logTab === 'redemptions') {
       root.appendChild(renderRedemptionsCard());
     } else {
       var box = h('div', { class: 'log-lines', text: T('Загрузка…') });
-      root.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: T('Технический лог (сегодня)') }),
-        h('button', { class: 'small', text: T('Открыть папку логов'), onclick: function () { act(post('/api/open-folder', { which: 'logs' })); } })), box));
+      root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('Технический лог (сегодня)') }), box));
       api('GET', '/api/logs').then(function (r) {
         clear(box);
         r.lines.forEach(function (l) {
@@ -1662,96 +2098,69 @@
   }
 
   // ---------------- Помощь ----------------
-  var helpApp = null; // вкладка инструкции: OBS или Streamlabs (по умолчанию — выбранная программа)
+  function helpSection(n, title, body, open) {
+    return h('details', { class: 'acc', open: !!open }, h('summary', null, h('span', { class: 'n', text: String(n) }), title, icon('chev', 'chev')), h('div', { class: 'acc-b' }, body));
+  }
+
   function renderHelp() {
     var root = clear($('page-help'));
-    root.appendChild(h('h1', { text: T('Помощь') }));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('1. Приложение Twitch (один раз)') }),
+    root.appendChild(pageHead(T('Помощь'), T('Пошаговые инструкции. Нажмите на пункт, чтобы раскрыть.')));
+    root.appendChild(helpSection(1, T('Приложение Twitch (один раз)'),
       h('ol', null,
         h('li', null, T('Откройте '), h('a', { href: 'https://dev.twitch.tv/console/apps/create', target: '_blank', rel: 'noopener noreferrer', text: 'dev.twitch.tv/console/apps/create' }), T(' и войдите своим аккаунтом Twitch.')),
         h('li', { text: T('Название — любое, например «My Alert Bot <ваш ник>».') }),
         h('li', { text: T('OAuth Redirect URL: http://localhost (бот его не использует, но поле обязательное).') }),
         h('li', { text: T('Категория: Broadcaster Suite. Тип клиента: «Общедоступный» (Public).') }),
         h('li', { text: T('Нажмите «Создать», затем «Управление» и скопируйте Client ID (секрет клиента НЕ нужен).') }),
-        h('li', { text: T('Вставьте Client ID в «Настройки → Twitch» и нажмите «Войти через Twitch».') }))));
-    var ha = helpApp || streamApp();
-    var helpTabs = h('div', { class: 'tabs' }, ['obs', 'streamlabs'].map(function (k) {
-      return h('button', { class: ha === k ? 'active' : '', text: APPS[k].name, onclick: function () { helpApp = k; renderHelp(); } });
-    }));
-    // Файл-загрузчик: источник открывается всегда и ждёт бота, поэтому неважно, что запущено раньше.
-    var fileStep = function (where) {
-      return S.overlayLoader ? h('li', null, T('Поставьте галочку «Локальный файл» (Local file), нажмите «Обзор» (Browse) и выберите файл '), h('code', { text: S.overlayLoader }),
-        T(' — путь можно вставить в строку «Имя файла». Так источник сам дождётся бота, даже если {0} запущен раньше. ', [where]),
-        h('span', { class: 'muted', text: T('Можно и без файла — указать URL ') }), h('code', { text: S.overlayUrl }),
-        h('span', { class: 'muted', text: T(', но тогда запускайте бота раньше {0}, иначе источник придётся обновлять вручную (правой кнопкой → «Обновить»).', [where]) }))
-        : h('li', null, 'URL: ', h('code', { text: S.overlayUrl }));
-    };
-    var sourceSteps = ha === 'streamlabs' ? h('ol', null,
-      h('li', { text: T('В Streamlabs Desktop: в блоке «Источники» (Sources) нажмите «+» → «Веб-источник» (Browser Source) → «Добавить источник». Название: «Alert Bot».') }),
-      fileStep('Streamlabs'),
-      h('li', { text: T('Ширина 1920, высота 1080 (источник растянется на весь экран; при другом разрешении он масштабируется сам).') }),
-      h('li', { text: T('Включите «Управление аудио через Streamlabs Desktop» (Control audio via Streamlabs Desktop) — звук оповещений появится в «Микшере» и попадёт в эфир. Выключите «Отключать источник, когда не видим» — иначе оповещения ждут, пока сцена неактивна.') }),
-      h('li', { text: T('Чтобы слышать оповещения в наушниках: «Микшер» → шестерёнка → «Дополнительные настройки звука» → у «Alert Bot» в столбце «Мониторинг звука» выберите «Мониторинг и вывод звука».') }),
-      h('li', { text: T('Добавьте ОДИН источник. В других сценах: «+» → «Веб-источник» → «Добавить существующий источник» → «Alert Bot» — иначе звук будет двоиться.') }),
-      h('li', { text: T('В «Настройки → Программа для стрима» выберите «Streamlabs Desktop» (для кнопки запуска и резервной копии сцен).') }),
-      h('li', { text: T('Нажмите «Тестовое оповещение» на главной. Звук играет сам, без кликов — как и в OBS.') }))
-      : h('ol', null,
-        h('li', { text: T('В OBS: «Источники» → «+» → «Браузер». Название: «Alert Bot».') }),
-        fileStep('OBS'),
-        h('li', { text: T('Ширина 1920, высота 1080 (источник растянется на весь экран; при другом разрешении он масштабируется сам).') }),
-        h('li', { text: T('Включите «Управлять аудио через OBS». Выключите «Отключать источник, когда он не виден» — иначе оповещения ждут, пока сцена неактивна.') }),
-        h('li', { text: T('Чтобы слышать оповещения в наушниках: «Расширенные свойства аудио» → «Мониторинг звука» → «Монитор и вывод».') }),
-        h('li', { text: T('Добавьте ОДИН источник и используйте его во всех сценах через «Добавить существующий» — иначе звук будет двоиться.') }),
-        h('li', { text: T('Нажмите «Тестовое оповещение» на главной.') }));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('2. Источник в программе для стрима') }), helpTabs, sourceSteps,
-      S.overlayLoader ? h('p', { class: 'small muted', style: 'margin:0 0 6px', text: T('Источник уже добавлен по адресу? Откройте его свойства, поставьте «Локальный файл», выберите файл выше и нажмите «ОК» — остальное менять не нужно.') }) : null,
-      h('p', { class: 'small muted', style: 'margin:0', text: T('Не держите источник одновременно в OBS и в Streamlabs: если обе программы открыты, оповещение прозвучит дважды.') })));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('3. Как добавить новую награду') }),
+        h('li', { text: T('Вставьте Client ID в «Настройки → Twitch» и нажмите «Войти через Twitch».') })), S.status.auth.status !== 'ok'));
+    root.appendChild(helpSection(2, T('Источник в программе для стрима'),
+      h('p', null, T('Пошаговые инструкции для OBS Studio и Streamlabs Desktop, пути к файлам и состояние каждого источника — на странице '), goLink('OBS / Streamlabs', 'obs'), '.')));
+    root.appendChild(helpSection(3, T('Как добавить новую награду'), [
       h('ol', null,
-        h('li', null, h('b', { text: T('Подготовьте файлы. ') }), T('Раздел «Медиа» → перетащите звук (MP3, WAV, OGG, M4A) и, если нужно, видео (MP4 H.264 или WebM), GIF или картинку. Бот проверит каждый файл.')),
-        h('li', null, h('b', { text: T('Создайте награду. ') }), T('Раздел «Награды» → «+ Новая награда в Twitch» → название (до 45 символов), стоимость в баллах и перезарядку в секундах → подтвердите. Награда сразу появится у зрителей — если файлы ещё не готовы, нажмите у неё «Поставить на паузу в Twitch».')),
-        h('li', null, h('b', { text: T('Назначьте файлы. ') }), T('В карточке награды выберите «Звук (основной файл)» и при желании «Видео / GIF / картинка». Для ролика на зелёном фоне поставьте галочку «Убрать зелёный фон».')),
-        h('li', null, h('b', { text: T('Выберите режим. ') }), T('«🎬 С видео» — показывается видео со своим звуком; «🔊 Только звук» — играет только звук. Здесь же громкость, длительность (0 — до конца файла), задержка и антиспам.')),
-        h('li', null, h('b', { text: T('Включите. ') }), T('Отметьте «Включена в боте».')),
-        h('li', null, h('b', { text: T('Проверьте. ') }), T('Кнопка «▶ Тест» проигрывает оповещение в OBS или Streamlabs без списания баллов. Учтите: во время эфира тест видят и слышат зрители.')),
+        h('li', null, h('b', { text: T('Подготовьте файлы. ') }), T('Раздел «Медиатека» → перетащите звук (MP3, WAV, OGG, M4A) и, если нужно, видео (MP4 H.264 или WebM), GIF или картинку. Бот проверит каждый файл.')),
+        h('li', null, h('b', { text: T('Создайте награду. ') }), T('Раздел «Награды» → «Новая награда в Twitch» → название (до 45 символов), стоимость в баллах и перезарядку в секундах → подтвердите. Награда сразу появится у зрителей — если файлы ещё не готовы, раскройте её и нажмите «Поставить на паузу в Twitch».')),
+        h('li', null, h('b', { text: T('Назначьте файлы. ') }), T('Нажмите на награду, чтобы раскрыть настройки, и выберите «Звук (основной файл)» и при желании «Видео / GIF / картинка». Для ролика на зелёном фоне поставьте галочку «Убрать зелёный фон».')),
+        h('li', null, h('b', { text: T('Выберите режим. ') }), T('«С видео» — показывается видео со своим звуком; «Только звук» — играет только звук. Здесь же громкость, длительность (0 — до конца файла), задержка и антиспам.')),
+        h('li', null, h('b', { text: T('Включите. ') }), T('Переключатель «Включена» в строке награды.')),
+        h('li', null, h('b', { text: T('Проверьте. ') }), T('Кнопка «Тест» проигрывает оповещение в OBS или Streamlabs без списания баллов. Учтите: во время эфира тест видят и слышат зрители.')),
         h('li', null, h('b', { text: T('Значок (по желанию). ') }), T('Twitch не даёт ботам загружать картинки — значок ставится вручную: '), h('a', { href: 'https://dashboard.twitch.tv', target: '_blank', rel: 'noopener noreferrer', text: T('панель автора Twitch') }), T(' → «Награды для зрителей» → «Баллы канала» → «Управление наградами» → награда → «Изображение награды». Нужен PNG 112×112 с прозрачным фоном, не больше ~25 КБ.'))),
       h('div', { class: 'infobox', style: 'margin-top:8px' },
         h('p', { style: 'margin:0 0 6px' }, h('b', { text: T('Награда создана на сайте Twitch, а не в боте? ') }), T('Нажмите «Обновить из Twitch» — бот увидит её и сможет проигрывать. Но менять её из панели и возвращать зрителям баллы при сбое он не сможет: для этого нажмите у неё «Создать свою копию в Twitch…», удалите оригинал на сайте Twitch, затем у копии — «Переименовать…» и «Снять с паузы в Twitch».')),
-        h('p', { style: 'margin:0' }, h('b', { text: T('Временно убрать видео у всех наград ') }), T('(например, на игровой сцене): «Главная» → карточка «Видео» → «Только звук для всех».')))));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('4. Мемы и звуки из интернета («Найти медиа»)') }),
+        h('p', { style: 'margin:0' }, h('b', { text: T('Временно убрать видео у всех наград ') }), T('(например, на игровой сцене): «Пульт» → плитка «Видео».')))]));
+    root.appendChild(helpSection(4, T('Мемы и звуки из интернета'), [
       h('ol', null,
         h('li', null, h('b', { text: T('Ключи (один раз). ') }), 'Klipy — ', h('a', { href: 'https://partner.klipy.com', target: '_blank', rel: 'noopener noreferrer', text: 'partner.klipy.com' }), ' → API Keys; Freesound — ',
-          h('a', { href: 'https://freesound.org/apiv2/apply', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org/apiv2/apply' }), T('. Вставьте их в «Настройки» → «Поиск медиа».')),
-        h('li', null, h('b', { text: T('Найдите. ') }), T('«Найти медиа» → Klipy (клипы со звуком, GIF, стикеры) или Freesound (звуки). Лучше искать по-английски.')),
+          h('a', { href: 'https://freesound.org/apiv2/apply', target: '_blank', rel: 'noopener noreferrer', text: 'freesound.org/apiv2/apply' }), T('. Вставьте их в «Настройки» → «Ключи сервисов».')),
+        h('li', null, h('b', { text: T('Найдите. ') }), T('«Медиатека» → «Найти в интернете» → Klipy (клипы со звуком, GIF, стикеры) или Freesound (звуки). Лучше искать по-английски.')),
         h('li', null, h('b', { text: T('Добавьте. ') }), T('«＋ В медиатеку», затем «▶ В {0}» для проверки или «＋ Награда» — бот создаст награду в Twitch с этим файлом.', [appShort()])),
         h('li', null, h('b', { text: T('Запасной звук. ') }), T('Мемы Klipy не скачиваются (правила Klipy) — они загружаются с сервера Klipy во время показа. Выберите награде «Звук (основной файл)»: он сыграет, если Klipy или интернет недоступны.'))),
-      h('p', { class: 'small muted', style: 'margin:0', text: T('Звуки Freesound скачиваются и работают без интернета; автора звуков с лицензией CC BY нужно указывать (например, в описании канала) — он записан у файла в «Медиа».') })));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('5. Переход с Sound Alerts (или другого сервиса)') }),
+      h('p', { class: 'small muted', style: 'margin:0', text: T('Звуки Freesound скачиваются и работают без интернета; автора звуков с лицензией CC BY нужно указывать (например, в описании канала) — он записан у файла в «Медиатеке».') })]));
+    root.appendChild(helpSection(5, T('Переход с Sound Alerts (или другого сервиса)'),
       h('ol', null,
-        h('li', { text: T('Загрузите звуки/видео в раздел «Медиа» и назначьте их наградам.') }),
+        h('li', { text: T('Загрузите звуки/видео в раздел «Медиатека» и назначьте их наградам.') }),
         h('li', { text: T('Включите «Режим наблюдения» и проверьте во время стрима, что все активации видны в журнале.') }),
         h('li', { text: T('Скройте (значок глаза) источники Sound Alerts во всех сценах {0}, включите нужные награды в боте и «Активный режим».', [appShort()]) }),
         h('li', { text: T('По желанию — создайте собственные копии наград (кнопка у награды). Старые награды Sound Alerts удаляйте только после успешной проверки.') }))));
-    root.appendChild(h('div', { class: 'card' }, h('h2', { text: T('6. Переход с TriggerFyre') }),
+    root.appendChild(helpSection(6, T('Переход с TriggerFyre'), [
       h('p', { class: 'muted', style: 'margin-top:0' }, T('Полная инструкция с таблицей настроек: '),
         h('a', { href: 'https://github.com/darkspiteman/twitch-points-alert-bot/blob/main/docs/MIGRATION-TRIGGERFYRE.md', target: '_blank', rel: 'noopener noreferrer', text: T('docs/MIGRATION-TRIGGERFYRE.md на GitHub') }),
         T(' (этот же файл есть в папке программы: docs\\MIGRATION-TRIGGERFYRE.md).')),
       h('ol', null,
-        h('li', null, h('b', { text: T('Наблюдение. ') }), T('«Главная» → карточка «Режим» → «Включить наблюдение». Пока TriggerFyre работает, бот только записывает активации и ничего не проигрывает.')),
+        h('li', null, h('b', { text: T('Наблюдение. ') }), T('«Пульт» → плитка «Режим» → выключите. Пока TriggerFyre работает, бот только записывает активации и ничего не проигрывает.')),
         h('li', null, h('b', { text: T('Перепишите триггеры. ') }), T('В TriggerFyre для каждого триггера запишите Reward name, файл, громкость, длительность, задержку и кулдаун (удобно сделать скриншоты).')),
         h('li', null, h('b', { text: T('Сохраните файлы. ') }), T('Возьмите исходные картинки, видео и звуки или сохраните их со страницы TriggerFyre (правой кнопкой → «Сохранить как…»).')),
-        h('li', null, h('b', { text: T('Загрузите и привяжите. ') }), T('«Медиа» → перетащите файлы. «Награды» → «Обновить из Twitch»: награды TriggerFyre появятся с меткой «Другое приложение» — это нормально. Назначьте файлы, громкость, длительность, задержку, антиспам и отметьте «Включена в боте».')),
-        h('li', null, h('b', { text: T('Положение и размер. ') }), T('«Настройки» → «Overlay» — они общие для всех наград.')),
-        h('li', null, h('b', { text: T('Проверьте. ') }), T('Вне эфира нажмите «▶ Тест» у каждой награды. Проведите один стрим в режиме наблюдения и убедитесь, что все активации есть в «Последних активациях наград».')),
-        h('li', null, h('b', { text: T('Переключитесь. ') }), T('В {0} скройте (значок глаза) источник TriggerFyre во всех сценах, затем в боте — «Включить воспроизведение». Откат: «Включить наблюдение» и снова показать источник TriggerFyre.', [appShort()])),
+        h('li', null, h('b', { text: T('Загрузите и привяжите. ') }), T('«Медиатека» → перетащите файлы. «Награды» → «Обновить из Twitch»: награды TriggerFyre появятся с меткой «Другое приложение» — это нормально. Назначьте файлы, громкость, длительность, задержку, антиспам и включите переключатель «Включена».')),
+        h('li', null, h('b', { text: T('Положение и размер. ') }), T('«Настройки» → «Оповещения» → «Вид оповещений» — они общие для всех наград.')),
+        h('li', null, h('b', { text: T('Проверьте. ') }), T('Вне эфира нажмите «Тест» у каждой награды. Проведите один стрим в режиме наблюдения и убедитесь, что все активации есть в «Журнал» → «Активации наград».')),
+        h('li', null, h('b', { text: T('Переключитесь. ') }), T('В {0} скройте (значок глаза) источник TriggerFyre во всех сценах, затем в боте включите плитку «Режим» на Пульте. Откат: снова выключить «Режим» и показать источник TriggerFyre.', [appShort()])),
         h('li', null, h('b', { text: T('Отключите TriggerFyre ') }), T('(после 2–3 удачных стримов): удалите его источник из OBS и отключите доступ в twitch.tv → «Настройки» → «Подключения».'))),
       h('div', { class: 'infobox', style: 'margin-top:8px' },
-        h('p', { style: 'margin:0' }, h('b', { text: T('Чего нет в боте: ') }), T('чат-команд, действий в OBS (смена сцены, показ источника, фильтры), случайного выбора файла и «% шанса», лимита срабатываний, своего положения для каждой награды. Бот работает только с наградами за баллы канала.')))));
+        h('p', { style: 'margin:0' }, h('b', { text: T('Чего нет в боте: ') }), T('чат-команд, действий в OBS (смена сцены, показ источника, фильтры), случайного выбора файла и «% шанса», лимита срабатываний, своего положения для каждой награды. Бот работает только с наградами за баллы канала.')))]));
   }
 
   // ---------------- старт ----------------
   renderStatic();
   go();
   connectWs();
-  setInterval(function () { if (S && page === 'home') renderHomeTop(); }, 5000);
+  setInterval(function () { if (S && page === 'pult') renderPultTop(); }, 5000);
 })();

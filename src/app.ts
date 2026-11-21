@@ -26,6 +26,9 @@ import { PiperInstaller } from './piper.ts';
 import type { PlayItem } from './queue.ts';
 import { readObsWsConfig, type ObsWsConfig } from './obs-ws.ts';
 import { writeStatsLoaders, type StatsLoaders } from './overlay-loader.ts';
+import { Counters } from './counters.ts';
+import { Telegram, summaryText, type TelegramChat } from './telegram.ts';
+import { createBackup, takeRestoreDone } from './backup.ts';
 
 export interface AppOptions {
   paths: Paths;
@@ -62,6 +65,8 @@ export interface AppOptions {
   /** Голоса Piper: подмена загрузки и запуска piper.exe (тесты). */
   piperTransport?: Transport;
   piperRun?: RunFn;
+  /** Адрес Telegram Bot API (тесты: мок-сервер). */
+  telegramBase?: string;
 }
 
 /**
@@ -84,8 +89,10 @@ export class App extends EventEmitter {
   readonly piper: PiperInstaller;
   readonly updater: Updater;
   readonly stats: StreamStats;
+  readonly counters: Counters;
+  readonly telegram: Telegram;
   /** Файлы-загрузчики дока и overlay статистики (пусто, если записать не удалось). */
-  statsLoaders: StatsLoaders = { dock: '', overlay: '' };
+  statsLoaders: StatsLoaders = { dock: '', overlay: '', counter: '' };
   readonly startedAt = Date.now();
   port: number;
   private cleanupTimer: NodeJS.Timeout | null = null;
@@ -131,7 +138,7 @@ export class App extends EventEmitter {
     this.piper = new PiperInstaller({ dir: path.join(opts.paths.dataDir, 'piper'), log: opts.logger.child('piper'), transport: opts.piperTransport });
     this.piper.on('status', (st: { busy: boolean; error: string; installed: boolean }) => {
       if (!st.busy && st.error) this.journal('error', 'tts', `Голоса Piper не установлены: ${st.error}`);
-      else if (!st.busy && st.installed) this.journal('info', 'tts', 'Голоса Piper установлены: выберите голос Piper в «Настройках» → «Озвучка текста зрителя»');
+      else if (!st.busy && st.installed) this.journal('info', 'tts', 'Голоса Piper установлены: выберите голос Piper в разделе «Озвучка»');
       this.hub?.broadcastPanel({ type: 'invalidate', what: 'tts' });
     });
     this.tts = new TtsEngine({ dir: path.join(opts.paths.dataDir, 'tts'), log: opts.logger.child('tts'), run: opts.ttsRun, piper: this.piper, runPiper: opts.piperRun });
@@ -155,12 +162,19 @@ export class App extends EventEmitter {
       store: {
         chatterVisits: (users, sessionId, now) => this.db.chatterVisits(users, sessionId, now),
         trackingSince: () => this.db.chattersTrackingSince(),
-        saveSummary: (sum) => this.db.saveStreamSummary(sum),
+        saveSummary: (sum) => {
+          this.db.saveStreamSummary(sum);
+          // Итоги — в Telegram (если включено). Повторное сохранение того же стрима (после короткого обрыва) правит сообщение.
+          void this.sendSummaryToTelegram(sum, false).catch(() => { /* ошибка уже в журнале */ });
+        },
         summaries: (limit) => this.db.streamSummaries<StreamSummary>(limit),
       },
       resumeMs: opts.statsResumeMs,
       obsHost: opts.obsHost, obsPollMs: opts.obsPollMs, intervals: opts.statsIntervals,
     });
+
+    this.counters = new Counters({ load: () => this.db.getMeta('counters'), save: (json) => this.db.setMeta('counters', json) });
+    this.telegram = new Telegram({ fetchFn: opts.fetchFn, base: opts.telegramBase });
 
     this.eventsub = new EventSubClient({
       log: opts.logger.child('eventsub'), url: opts.eventsubUrl, keepaliveSeconds: opts.eventsubKeepaliveSec ?? 30, backoff: opts.eventsubBackoff,
@@ -310,6 +324,85 @@ export class App extends EventEmitter {
     return r.ok ? { ok: true } : { ok: false, error: r.reason };
   }
 
+  // ---------------- 1.9.0: проверка текста, счётчики, Telegram, резервная копия ----------------
+
+  /** Решение стримера по тексту, ждущему проверки (док или главная панели). */
+  decideHeld(id: string, action: 'voice' | 'mute' | 'reject'): void {
+    const item = this.queue.snapshot().held.find((x) => x.id === id);
+    const r = this.queue.decide(id, action);
+    if (!r.ok) throw new Error(r.reason);
+    if (!item) return;
+    const rejected = action === 'reject' || (action === 'mute' && !item.hasMedia);
+    if (!rejected) {
+      this.db.setRedemptionStatus(item.id, 'queued', action === 'mute' ? 'Без озвучки (решение стримера)' : '');
+      this.hub.broadcastPanel({ type: 'invalidate', what: 'redemptions' });
+    }
+    this.journal('info', 'redemption', rejected ? `Текст от ${item.userName} отклонён` : action === 'voice' ? `Текст от ${item.userName} одобрен — будет озвучен` : `«${item.rewardTitle}» от ${item.userName} — без озвучки`);
+  }
+
+  /** Счётчики изменились — док, overlay и панель обновятся. */
+  countersChanged(): void {
+    this.hub.broadcastStats(this.statsPayload());
+    this.hub.broadcastPanel({ type: 'invalidate', what: 'counters' });
+  }
+
+  /** Отправить итоги стрима в Telegram. force — по кнопке в панели. */
+  async sendSummaryToTelegram(sum: StreamSummary, force: boolean): Promise<void> {
+    const s = this.db.getSettings();
+    if (!force && !s.telegramEnabled) return;
+    if (!s.telegramToken || !s.telegramChatId) {
+      if (force) throw new Error('Сначала вставьте токен бота и выберите чат');
+      this.journal('warn', 'telegram', 'Итоги стрима не отправлены в Telegram: не указан токен бота или чат');
+      return;
+    }
+    let sent: Record<string, { chat: string; msg: number }> = {};
+    try { sent = JSON.parse(this.db.getMeta('telegram_sent') ?? '{}'); } catch { sent = {}; }
+    const text = summaryText(sum, this.lang);
+    try {
+      const prev = sent[sum.id];
+      if (prev && prev.chat === s.telegramChatId && !force) {
+        await this.telegram.edit(s.telegramToken, s.telegramChatId, prev.msg, text);
+      } else {
+        const msg = await this.telegram.send(s.telegramToken, s.telegramChatId, text);
+        sent[sum.id] = { chat: s.telegramChatId, msg };
+        const keys = Object.keys(sent);
+        for (const k of keys.slice(0, Math.max(0, keys.length - 20))) delete sent[k];
+        this.db.setMeta('telegram_sent', JSON.stringify(sent));
+      }
+      this.journal('info', 'telegram', 'Итоги стрима отправлены в Telegram');
+    } catch (e) {
+      this.journal('warn', 'telegram', `Итоги стрима не отправлены в Telegram: ${(e as Error).message}`);
+      throw e;
+    }
+  }
+
+  /** Проверка из панели: тестовое сообщение (и итоги прошлого стрима, если есть). */
+  async telegramTest(): Promise<{ withSummary: boolean }> {
+    const s = this.db.getSettings();
+    if (!s.telegramToken || !s.telegramChatId) throw new Error('Сначала вставьте токен бота и выберите чат');
+    const last = this.stats.history(1)[0] as StreamSummary | undefined;
+    const head = tr('✅ Twitch Alert Bot подключён: итоги будут приходить сюда после каждого стрима.', this.lang);
+    await this.telegram.send(s.telegramToken, s.telegramChatId, last ? `${head}
+
+${summaryText(last, this.lang)}` : head);
+    return { withSummary: !!last };
+  }
+
+  async telegramChats(): Promise<TelegramChat[]> {
+    const s = this.db.getSettings();
+    if (!s.telegramToken) throw new Error('Сначала вставьте токен бота');
+    return this.telegram.chats(s.telegramToken);
+  }
+
+  /** Резервная копия в data\backups. */
+  createBackup(kind: 'backup' | 'before-restore' = 'backup') {
+    const r = createBackup({ db: this.db.raw, dataDir: this.opts.paths.dataDir, mediaDir: this.opts.paths.mediaDir, version: APP_VERSION }, kind);
+    this.journal('info', 'backup', kind === 'backup'
+      ? `Резервная копия создана: ${r.name} (${(r.size / 1048576).toFixed(1)} МБ, медиафайлов: ${r.files})`
+      : `Перед восстановлением сохранена копия текущих данных: ${r.name}`);
+    return r;
+  }
+
   /** Снимок статистики для дока и overlay (с оформлением overlay и языком). */
   statsPayload(): Record<string, unknown> {
     const s = this.db.getSettings();
@@ -322,7 +415,12 @@ export class App extends EventEmitter {
       stats: { ...v, obs: { ...v.obs, message: v.obs.message ? tr(v.obs.message, this.lang) : '' } },
       // Очередь оповещений — для дока (что играет, кто ждёт, «Пропустить» / «Пауза»).
       queue: this.queue.snapshot(),
-      tts: { enabled: s.ttsEnabled },
+      tts: { enabled: s.ttsEnabled, review: s.ttsReview },
+      // 2.0.0: палитра — док OBS оформлен так же, как панель.
+      theme: s.panelTheme,
+      // 1.9.0: счётчики (кнопки в доке, числа на экране стрима).
+      counters: this.counters.all(),
+      counterOverlay: { style: s.counterStyle, scale: s.counterScale },
       overlay: {
         fields: s.statsOverlayFields.split(',').filter(Boolean), layout: s.statsOverlayLayout, style: s.statsOverlayStyle,
         labels: s.statsOverlayLabels, scale: s.statsOverlayScale,
@@ -361,7 +459,7 @@ export class App extends EventEmitter {
     this.hub.onStatsClients = (n) => this.stats.setClients(n);
     this.stats.on('update', () => this.hub.broadcastStats(this.statsPayload()));
     this.stats.obs.on('state', (st: string, msg: string) => {
-      if (st === 'auth_failed') this.journal('warn', 'obs', `${msg}. Проверьте пароль в «Статистика» → «Подключение к OBS».`);
+      if (st === 'auth_failed') this.journal('warn', 'obs', `${msg}. Проверьте пароль в «OBS / Streamlabs» → «Подключение к OBS».`);
     });
 
     this.queue.on('change', (snap) => {
@@ -470,8 +568,9 @@ export class App extends EventEmitter {
       if (raw.startsWith(ENC_PREFIX)) {
         try { this.db.setSecretPlain(k, await prot.unprotect(raw.slice(ENC_PREFIX.length))); } catch (e) {
           this.log.warn(`Ключ ${k} не расшифровывается`, e);
-          if (k === 'obsWsPassword') this.journal('warn', 'settings', 'Не удалось расшифровать пароль OBS WebSocket (например, база перенесена с другого компьютера) — введите его заново в «Статистика» → «Подключение к OBS».');
-          else this.journal('warn', 'settings', `Не удалось расшифровать ключ ${k === 'klipyApiKey' ? 'Klipy' : 'Freesound'} (например, база перенесена с другого компьютера) — вставьте его заново в «Настройки» → «Поиск медиа».`);
+          if (k === 'obsWsPassword') this.journal('warn', 'settings', 'Не удалось расшифровать пароль OBS WebSocket (например, база перенесена с другого компьютера) — введите его заново в «OBS / Streamlabs» → «Подключение к OBS».');
+          else if (k === 'telegramToken') this.journal('warn', 'settings', 'Не удалось расшифровать токен бота Telegram (например, база перенесена с другого компьютера) — вставьте его заново в «Стрим» → «Telegram».');
+          else this.journal('warn', 'settings', `Не удалось расшифровать ключ ${k === 'klipyApiKey' ? 'Klipy' : 'Freesound'} (например, база перенесена с другого компьютера) — вставьте его заново в «Настройки» → «Ключи сервисов».`);
         }
       } else {
         try { await this.saveSecret(k, raw); } catch (e) { this.log.warn(`Ключ ${k} не удалось зашифровать — остаётся как был`, e); }
@@ -507,6 +606,8 @@ export class App extends EventEmitter {
     this.tts.cleanup();
     this.cleanupTimer = setInterval(() => { try { this.db.cleanup(this.db.getSettings().historyRetentionDays); } catch { /* */ } this.tts.cleanup(); }, 6 * 3600_000);
     this.cleanupTimer.unref();
+    const restored = takeRestoreDone(this.opts.paths.dataDir);
+    if (restored) this.journal('info', 'backup', `Данные восстановлены из резервной копии от ${new Date(restored.createdAt).toLocaleString('ru-RU')} (версия ${restored.version}, медиафайлов: ${restored.mediaFiles}). Прежние данные сохранены в папке restore-previous.`);
     this.journal('info', 'startup', `Бот запущен (версия ${APP_VERSION})`);
     if (!this.opts.noAutoUpdateCheck) this.updater.startAuto(() => this.db.getSettings().autoUpdateCheck);
   }

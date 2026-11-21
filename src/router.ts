@@ -24,7 +24,7 @@ export interface RedemptionEvent {
   redeemed_at: string;
 }
 
-export type HandleResult = 'duplicate' | 'ignored' | 'observed' | 'queued' | 'skipped' | 'failed' | 'missed' | 'wrong_type';
+export type HandleResult = 'duplicate' | 'ignored' | 'observed' | 'queued' | 'held' | 'skipped' | 'failed' | 'missed' | 'wrong_type';
 
 export interface RouterDeps {
   db: Db;
@@ -129,21 +129,39 @@ export class RedemptionRouter extends EventEmitter {
       this.maybeCancel(reward, ev.id);
       return 'failed';
     }
-    const r = this.d.queue.enqueue(built.item);
+    // 1.9.0: текст для озвучки сначала проверяет стример (в доке или на главной панели).
+    const review = built.item.ttsText ? this.needsReview(s.ttsReview, login, ev.id) : false;
+    const r = review ? this.d.queue.hold(built.item) : this.d.queue.enqueue(built.item);
     if (!r.ok) {
       set('skipped', r.reason);
       this.d.journal('warn', 'queue', `«${reward.title}» от ${who}: ${r.reason}`);
       this.maybeCancel(reward, ev.id);
       return 'skipped';
     }
+    if (review) {
+      set('held', 'Ждёт проверки текста');
+      this.d.journal('info', 'redemption', `«${reward.title}» от ${who}: текст ждёт проверки — «Озвучить» или «Отклонить» в доке или на Пульте`);
+      return 'held';
+    }
     set('queued', '');
     this.d.journal('info', 'redemption', `«${reward.title}» от ${who}${source === 'recovery' ? ' (восстановлено после разрыва)' : ''}`);
     return 'queued';
   }
 
+  /** Нужна ли проверка текста: всем, никому или только зрителям, чей текст ещё ни разу не озвучивался. */
+  private needsReview(mode: 'off' | 'new' | 'all', login: string, exceptId: string): boolean {
+    if (mode === 'off') return false;
+    if (mode === 'all' || !login) return true;
+    const row = this.d.db.raw.prepare(
+      `SELECT r.id FROM redemptions r JOIN rewards w ON w.id = r.reward_id
+       WHERE r.user_login = ? AND r.id != ? AND r.status = 'done' AND r.user_input <> '' AND w.tts = 1 LIMIT 1`,
+    ).get(login, exceptId);
+    return !row;
+  }
+
   private lastByUser(login: string, since: number, rewardId: string | null, exceptId: string): boolean {
     const rows = this.d.db.raw.prepare(
-      `SELECT id FROM redemptions WHERE (user_login = ? ) AND received_at >= ? AND status IN ('queued','playing','done') AND id != ? ${rewardId ? 'AND reward_id = ?' : ''} LIMIT 1`,
+      `SELECT id FROM redemptions WHERE (user_login = ? ) AND received_at >= ? AND status IN ('held','queued','playing','done') AND id != ? ${rewardId ? 'AND reward_id = ?' : ''} LIMIT 1`,
     ).all(...([login, since, exceptId, ...(rewardId ? [rewardId] : [])] as string[]));
     return rows.length > 0;
   }
@@ -264,7 +282,7 @@ export class RedemptionRouter extends EventEmitter {
       const m = item.visual ?? item.audio;
       if (m && !m.remote && /декод|decode|не поддерж|MEDIA_ERR|повреж/i.test(message)) {
         const row = this.d.db.getMedia(m.id);
-        const fix = row && row.kind !== 'image' ? ' Нажмите «Перекодировать» у файла в разделе «Медиа».' : '';
+        const fix = row && row.kind !== 'image' ? ' Нажмите «Перекодировать» у файла в разделе «Медиатека».' : '';
         this.d.db.updateMediaStatus(m.id, 'broken', `Не воспроизводится в программе для стрима: ${message.replace(/^Ошибка воспроизведения: /, '')}.${fix}`);
         if (fix) this.d.journal('warn', 'media', `«${row!.name}» не воспроизводится в программе для стрима.${fix}`);
       }
@@ -321,7 +339,7 @@ export class RedemptionRouter extends EventEmitter {
               if (!(t >= gapStartedAt - 5000 && t <= gapEndedAt + 2000)) continue;
               if (db.hasRedemption(r.id)) continue;
               const res = this.handleRedemption({ id: r.id, user_id: r.user_id, user_login: r.user_login, user_name: r.user_name, user_input: r.user_input, status: r.status.toLowerCase(), reward: r.reward, redeemed_at: r.redeemed_at }, 'recovery');
-              if (res === 'queued' || res === 'missed' || res === 'observed') recovered++;
+              if (res === 'queued' || res === 'held' || res === 'missed' || res === 'observed') recovered++;
             }
           } catch (e) {
             this.d.log.warn(`Не удалось получить погашения награды «${reward.title}» для восстановления`, e);

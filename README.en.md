@@ -11,7 +11,7 @@ in your streaming app. No cloud services, no paid hosting.
 ## Language
 
 The panel starts in your browser's language. Switch any time with **RU / EN** at the top of the left sidebar
-or in **Settings → Язык / Language**. The change applies immediately, no restart: the panel, tips, Help, bot messages,
+or in **Settings → General → Язык / Language**. The change applies immediately, no restart: the panel, tips, Help, bot messages,
 the event log, the overlay service text, the test alert caption and the tray menu.
 
 ## Install (one time)
@@ -42,7 +42,7 @@ the bot **never sees your password**.
 3. Click “Create”, then “Manage”. Copy the **Client ID**. The client secret is not needed.
 4. In the bot panel: **Settings → Twitch** → paste the Client ID → click **“Sign in with Twitch”**.
 5. An 8-character code appears. Click **“Open twitch.tv/activate”**, check the code and click “Authorize”.
-6. A few seconds later Home shows: **Twitch — Connected, EventSub — Active**.
+6. A few seconds later the Control page shows: **Twitch — Connected, EventSub — Active**.
 
 Channel points are only available to Twitch Affiliates and Partners.
 
@@ -50,26 +50,26 @@ Channel points are only available to Twitch Affiliates and Partners.
 
 1. “Sources” → “+” → **“Browser”**. Name: “Alert Bot”.
 2. Check **“Local file”**, click “Browse” and select `data\overlay.html` in the program folder
-   (the exact path and a “Copy” button are in **Settings → Overlay**). This way it doesn't matter
+   (the exact path and a “Copy” button are in **OBS / Streamlabs → Alerts**). This way it doesn't matter
    whether OBS or the bot starts first — the source waits for the bot.
    *Alternatively*, use the URL `http://127.0.0.1:17420/overlay`, but then start the bot before OBS.
 3. Width **1920**, height **1080**.
 4. Turn on **“Control audio via OBS”**, turn off **“Shutdown source when not visible”**.
 5. To hear alerts in your headphones: “Advanced Audio Properties” → “Audio Monitoring” → “Monitor and Output”.
 6. Add **one** source and reuse it in other scenes via “Add Existing”, otherwise sound plays twice.
-7. Click **“Test alert”** on the panel's Home page.
+7. Click **“Test alert”** on the panel's Control page.
 
 ## Add to Streamlabs Desktop (one time)
 
 1. “Sources” → “+” → **“Browser Source”** → “Add Source”. Name: “Alert Bot”.
 2. Same as OBS: check **“Local file”** and select `data\overlay.html` (or use the URL).
 3. Width 1920, height 1080. Turn on **“Control audio via Streamlabs Desktop”**, turn off “Shutdown source when not visible”.
-4. In the bot panel: **Settings → Streaming app → Streamlabs Desktop** (for the launch button and scene backup).
-5. Click **“Test alert”** on Home. Don't keep the source in both OBS and Streamlabs at the same time.
+4. In the bot panel: **OBS / Streamlabs** → choose **Streamlabs Desktop** at the top right (for the launch button and scene backup).
+5. Click **“Test alert”** on the Control page. Don't keep the source in both OBS and Streamlabs at the same time.
 
 ## Rewards
 
-1. **Media** — drag in sounds (MP3, WAV, OGG, M4A), videos (MP4 H.264 or WebM), GIFs or images. The bot checks every file;
+1. **Media library** — drag in sounds (MP3, WAV, OGG, M4A), videos (MP4 H.264 or WebM), GIFs or images. The bot checks every file;
    if a video codec won't play in OBS/Streamlabs, the **“Convert”** button re-saves it as WebM right in the panel.
 2. **Rewards** → **“+ New reward in Twitch”** → title, cost, cooldown → confirm.
 3. On the reward card choose **“Sound (main file)”** and optionally **“Video / GIF / image”**,
@@ -79,7 +79,7 @@ Channel points are only available to Twitch Affiliates and Partners.
 Rewards created on the Twitch website (or by Sound Alerts) are played too, but the bot can't edit them or refund points —
 use **“Create your own copy in Twitch…”** for that.
 
-**Find media**: memes and clips from Klipy, sounds from Freesound (free API keys in **Settings → Media search**)
+**Media library → Find online**: memes and clips from Klipy, sounds from Freesound (free API keys in **Settings → Service keys**)
 and downloads from a direct link. **“＋ Reward”** creates a Twitch reward with the file in one click.
 
 ## Everyday use
@@ -87,7 +87,7 @@ and downloads from a direct link. **“＋ Reward”** creates a Twitch reward w
 - Start “Twitch Alert Bot” from the desktop, or turn on **Settings → System → Start the bot with Windows**.
 - **Tray icon color:** green — everything is connected; yellow — something isn't (for example, OBS is closed);
   red — the bot isn't responding (the launcher restarts it).
-- **Updates:** the bot checks for new versions and installs them with one button (“❤ Support the author” page).
+- **Updates:** the bot checks for new versions and installs them with one button (“Settings” → “System”).
   Settings, rewards, media and the Twitch sign-in are kept.
 
 ## Troubleshooting
@@ -98,7 +98,7 @@ and downloads from a direct link. **“＋ Reward”** creates a Twitch reward w
 | “Twitch rejected the sign-in request” | Check the Client ID and that the app client type is “Public” |
 | “Overlay: Not connected” while OBS is open | OBS probably started before the bot with a URL source: right-click the source → “Refresh”, or switch it to the “Local file” `overlay.html` |
 | Sound plays twice | A second source with the bot address (or the same source in both OBS and Streamlabs), or Sound Alerts is still running |
-| A file “doesn't play” | Media → “Convert” on the file, then “Check all files” |
+| A file “doesn't play” | Media library → “Convert” on the file, then “Check all files” |
 | “Port is used by another program” | Settings → System → another port, restart the bot and update the source |
 
 Logs: tray menu → “Open logs folder” (`data\logs`). Tokens are never written to logs.

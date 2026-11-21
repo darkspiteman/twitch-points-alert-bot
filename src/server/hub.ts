@@ -7,6 +7,9 @@ import type { ScopedLogger } from '../logger.ts';
 import { type StreamApp, STREAM_APPS, detectStreamAppFromUA, isStreamApp } from '../stream-app.ts';
 import { PROBE_ORIGINS } from '../overlay-loader.ts';
 
+const STATS_KINDS = ['dock', 'overlay', 'counter'] as const;
+export type StatsKind = typeof STATS_KINDS[number];
+
 /** app — программа для стрима (OBS Studio / Streamlabs Desktop); null — обычный браузер (предпросмотр). */
 interface OverlayClient { id: string; ws: WebSocket; app: StreamApp | null; viaFile: boolean; connectedAt: number; alive: boolean; ua: string }
 
@@ -38,6 +41,8 @@ export class Hub implements OverlayTransport {
   private panelWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   private statsWss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 });
   private statsClients = new Set<WebSocket>();
+  /** 2.0.0: что за страница статистики подключена (док, overlay, счётчики) и из какой программы — для меток в панели. */
+  private statsMeta = new WeakMap<WebSocket, { kind: StatsKind | null; preview: boolean; app: StreamApp | null }>();
   private overlays = new Map<string, OverlayClient>();
   private panels = new Set<WebSocket>();
   private heartbeat: NodeJS.Timeout;
@@ -63,7 +68,7 @@ export class Hub implements OverlayTransport {
     this.allowedOrigins = allowedOrigins;
     this.overlayWss.on('connection', (ws, req) => this.onOverlay(ws, req));
     this.panelWss.on('connection', (ws) => this.onPanel(ws));
-    this.statsWss.on('connection', (ws) => this.onStats(ws));
+    this.statsWss.on('connection', (ws, req: IncomingMessage) => this.onStats(ws, req));
     // Проверка «бот запущен?» для файла-загрузчика: ответ и сразу закрытие, никаких данных бота.
     this.probeWss.on('connection', (ws) => { ws.on('error', () => {}); ws.send(JSON.stringify({ type: 'ready', app: 'twitch-alert-bot' }), () => ws.close(1000)); });
     this.heartbeat = setInterval(() => this.beat(), 15_000);
@@ -137,7 +142,10 @@ export class Hub implements OverlayTransport {
   }
 
   /** Док и overlay статистики: только получают данные (входящие сообщения игнорируются). */
-  private onStats(ws: WebSocket): void {
+  private onStats(ws: WebSocket, req?: IncomingMessage): void {
+    const q = new URL(req?.url ?? '/', 'http://x').searchParams;
+    const kind = (STATS_KINDS as readonly string[]).includes(q.get('kind') ?? '') ? q.get('kind') as StatsKind : null;
+    this.statsMeta.set(ws, { kind, preview: q.get('preview') === '1', app: detectStreamAppFromUA(String(req?.headers['user-agent'] ?? '')) });
     this.statsClients.add(ws);
     ws.on('close', () => { this.statsClients.delete(ws); this.onStatsClients(this.statsClients.size); });
     ws.on('error', () => {});
@@ -146,6 +154,18 @@ export class Hub implements OverlayTransport {
   }
 
   get statsClientCount(): number { return this.statsClients.size; }
+
+  /** Сколько страниц каждого вида открыто вне панели (предпросмотры панели не считаются) и в какой программе. */
+  statsSources(): Record<StatsKind, { count: number; app: StreamApp | null }> {
+    const out = { dock: { count: 0, app: null }, overlay: { count: 0, app: null }, counter: { count: 0, app: null } } as Record<StatsKind, { count: number; app: StreamApp | null }>;
+    for (const c of this.statsClients) {
+      const m = this.statsMeta.get(c);
+      if (!m || !m.kind || m.preview) continue;
+      out[m.kind].count++;
+      out[m.kind].app ??= m.app;
+    }
+    return out;
+  }
 
   broadcastStats(msg: unknown): void {
     if (!this.statsClients.size) return;

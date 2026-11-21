@@ -89,10 +89,52 @@ export class PlaybackQueue extends EventEmitter {
       paused: this.paused,
       current: this.current ? { ...summary(this.current.item), startedAt: this.current.startedAt } : this.preparing ? { ...summary(this.preparing), startedAt: Date.now() } : null,
       items: this.items.map(summary),
+      // 1.9.0: текст зрителя ждёт проверки стримером — что именно прозвучит.
+      held: this.held.map((i) => ({ ...summary(i), text: i.ttsText ?? '', hasMedia: !!(i.visual || i.audio) })),
     };
   }
 
   get length(): number { return this.items.length; }
+
+  // ---------------- 1.9.0: проверка текста перед озвучкой ----------------
+  private held: PlayItem[] = [];
+
+  /** Отложить до решения стримера (текст для озвучки ещё не проверен). */
+  hold(item: PlayItem): { ok: true } | { ok: false; reason: string } {
+    const s = this.getSettings();
+    if (this.held.length >= s.maxQueueLength) return { ok: false, reason: `Слишком много текстов ждут проверки (максимум ${s.maxQueueLength})` };
+    this.held.push(item);
+    this.changed();
+    return { ok: true };
+  }
+
+  get heldCount(): number { return this.held.length; }
+
+  /**
+   * Решение стримера: 'voice' — в очередь с озвучкой, 'mute' — в очередь без озвучки (только медиа награды),
+   * 'reject' — не показывать (событие 'finished' с 'skipped': роутер вернёт баллы, если может).
+   */
+  decide(id: string, action: 'voice' | 'mute' | 'reject'): { ok: true } | { ok: false; reason: string } {
+    const i = this.held.findIndex((x) => x.id === id);
+    if (i < 0) return { ok: false, reason: 'Этого текста уже нет в списке проверки' };
+    const item = this.held[i];
+    if (action === 'mute' && !item.visual && !item.audio) action = 'reject'; // без текста нечего показывать
+    if (action === 'reject') {
+      this.held.splice(i, 1);
+      this.emit('finished', { item, result: 'skipped', message: 'Текст отклонён стримером' });
+      this.changed();
+      return { ok: true };
+    }
+    // Время ожидания проверки не считается: иначе одобренное оповещение сразу «устарело» бы.
+    const ready: PlayItem = { ...item, createdAt: Date.now(), ...(action === 'mute' ? { ttsText: null, tts: null } : {}) };
+    const s = this.getSettings();
+    if (this.items.length >= s.maxQueueLength) return { ok: false, reason: `Очередь переполнена (максимум ${s.maxQueueLength})` };
+    this.held.splice(i, 1);
+    this.items.push(ready);
+    this.changed();
+    this.pump();
+    return { ok: true };
+  }
 
   enqueue(item: PlayItem): { ok: true } | { ok: false; reason: string } {
     const s = this.getSettings();
@@ -255,7 +297,8 @@ export class PlaybackQueue extends EventEmitter {
   dispose(): PlayItem[] {
     this.disposed = true;
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
-    const left = [...this.items];
+    const left = [...this.items, ...this.held];
+    this.held = [];
     if (this.preparing) { left.unshift(this.preparing); this.preparing = null; }
     if (this.current) { clearTimeout(this.current.timer); left.unshift(this.current.item); this.current = null; }
     this.items = [];

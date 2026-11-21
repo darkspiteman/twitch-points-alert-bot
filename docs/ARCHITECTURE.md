@@ -163,3 +163,29 @@ DNS rebinding), изменяющие запросы требуют заголо�
 - 1.8.0: голоса Piper — `src/piper.ts` (установка по кнопке, хеши файлов зашиты в код), `TtsEngine` выбирает Piper для голосов `piper:<key>`;
   `ttsPrepare`/`chooseVoice` — язык текста и [Имя] голоса.
 - Метки — `POST /api/stats/marker` → Helix `/streams/markers`; `StreamStats.noteMarker`. Топ — `SessionState.byReward/byUser`, `Db.redemptionTop`.
+
+### 1.9.0
+
+- Проверка текста перед озвучкой — настройка `ttsReview` ('off' | 'new' | 'all'). Роутер (`needsReview`: «новый» — нет погашения со статусом done
+  и текстом у награды с озвучкой) кладёт элемент не в очередь, а в `PlaybackQueue.hold()` (статус погашения `held`). `queue.snapshot().held` видят
+  док и главная; решение — `POST /api/queue/held/:id/voice|mute|reject` → `App.decideHeld` → `queue.decide`. «Отклонить» = событие `finished`
+  со `skipped`: роутер возвращает баллы, как при любом сбое (у наград бота).
+- Счётчики — `src/counters.ts` (meta `counters`, до 10), `/api/counters*`; в payload `/ws/stats` — `counters` и `counterOverlay`.
+  Экран — `public/stats/counter.*` (`/stats/counter`), загрузчик `data\counter-overlay.html` (вид `counter` в overlay-loader).
+- Итоги в Telegram — `src/telegram.ts` (Bot API: sendMessage / editMessageText / getUpdates, `summaryText()`); токен — в `SECRET_SETTINGS` (DPAPI).
+  `App.sendSummaryToTelegram` вызывается из `saveSummary` статистики; id сообщения по id стрима — meta `telegram_sent` (повторное сохранение после
+  короткого обрыва правит сообщение). Адрес запроса содержит токен — не логируется.
+- Резервная копия — `src/backup.ts`: ZIP без сжатия, пишется потоком (`VACUUM INTO` для базы + `media/<uuid>.<ext>` + `backup.json`), `data\backups`
+  (последние 5 копий и 3 «перед восстановлением»). Восстановление: `PUT /api/backup/restore` → файл на диск → `prepareRestore` (проверка метки,
+  версии, CRC, только имена медиа вида uuid, `PRAGMA quick_check`) → `data\restore-pending` → копия текущих данных → выход с кодом 4 (лаунчер
+  перезапускает) → `applyPendingRestore` в main.ts до открытия базы (прежние данные — `data\restore-previous`) → запись в журнал при старте.
+
+### 2.0.0 — новая панель
+
+- Разделы (`#pult`, `#stream`, `#rewards`, `#media`, `#voice`, `#obs`, `#settings`, `#log`, `#help`, `#support`); старые адреса `#home`, `#stats`,
+  `#find` переводятся (`PAGE_ALIASES`). Вкладки страниц — объект `TABS` в `app.js`; помощники `pageHead`, `pageTabs`, `toggle`, `opt`, `icon`, `goTo`.
+- Значки — `<symbol id="i-…">` в `index.html` (inline SVG разрешён CSP), шрифты — `public/panel/fonts/*.woff2` (OFL, `OFL.txt`).
+- Палитра — настройка `panelTheme` (`amethyst` | `midnight` | `graphite`), `data-palette` на `<html>`; панель запоминает её в localStorage,
+  чтобы не мигала при открытии; в доке — поле `theme` payload `/ws/stats`.
+- Метки источников на странице OBS / Streamlabs: страницы статистики подключаются к `/ws/stats?kind=dock|overlay|counter`
+  (`&preview=1` — предпросмотр в панели, не считается); `Hub.statsSources()` → `setup.sources` в `/api/stats`.

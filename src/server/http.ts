@@ -3,13 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import type { App } from '../app.ts';
-import { PUBLIC_DIR, validateSettingsPatch, publicSettings, SUPPORT_LINKS, SECRET_SETTINGS } from '../config.ts';
+import { PUBLIC_DIR, validateSettingsPatch, publicSettings, SUPPORT_LINKS, SECRET_SETTINGS, APP_VERSION } from '../config.ts';
 import { FindError, KLIPY_TYPES, type KlipyType } from '../find.ts';
 import { HelixError } from '../twitch/helix.ts';
 import { MAX_UPLOAD_BYTES, isRemote, mediaFlags } from '../media.ts';
 import { localize, tr } from '../i18n.ts';
 import { getAutostart, setAutostart } from '../autostart.ts';
 import { STREAM_APPS, resolveExe, launchDenied } from '../stream-app.ts';
+import { BACKUP_NAME, backupDir, listBackups, prepareRestore, cancelPendingRestore } from '../backup.ts';
+import crypto from 'node:crypto';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -24,7 +26,7 @@ export class HttpError extends Error {
 type Handler = (req: IncomingMessage, res: ServerResponse, params: Record<string, string>, body: unknown) => Promise<unknown> | unknown;
 interface Route { method: string; pattern: RegExp; keys: string[]; handler: Handler; raw?: boolean }
 
-export interface ServerHooks { onShutdown: () => void }
+export interface ServerHooks { onShutdown: () => void; /** Перезапуск (лаунчер запускает бота снова по коду выхода 4). */ onRestart?: () => void }
 
 export function createServer(app: App, hooks: ServerHooks): http.Server {
   const routes: Route[] = [];
@@ -83,11 +85,12 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     return {
       ...app.statsPayload(),
       setup: {
-        dockLoader: app.statsLoaders.dock, overlayLoader: app.statsLoaders.overlay,
-        dockUrl: `http://127.0.0.1:${app.port}/stats/dock`, overlayUrl: `http://127.0.0.1:${app.port}/stats/overlay`,
+        dockLoader: app.statsLoaders.dock, overlayLoader: app.statsLoaders.overlay, counterLoader: app.statsLoaders.counter,
+        dockUrl: `http://127.0.0.1:${app.port}/stats/dock`, overlayUrl: `http://127.0.0.1:${app.port}/stats/overlay`, counterUrl: `http://127.0.0.1:${app.port}/stats/counter`,
         streamApp: s.streamApp,
         obs: { fileFound: cfg.fileFound, enabled: cfg.enabled, port: cfg.port, passwordFromFile: cfg.fromFile, passwordSet: !!s.obsWsPassword, portManual: s.obsWsPort },
         clients: app.hub.statsClientCount,
+        sources: app.hub.statsSources(),
       },
     };
   });
@@ -144,7 +147,11 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     if (ok.obsWsPassword !== undefined || ok.obsWsPort !== undefined || ok.streamApp !== undefined || ok.obsConfigDir !== undefined) app.stats.syncObs(true);
     // «Награды только в эфире» включили или выключили — применить сразу.
     if (ok.rewardsOnlyLive !== undefined) void app.queueRewardsLive(null);
-    if (ok.ttsEnabled !== undefined && app.hub.statsClientCount > 0) app.hub.broadcastStats(app.statsPayload());
+    if ((ok.ttsEnabled !== undefined || ok.ttsReview !== undefined || ok.counterStyle !== undefined || ok.counterScale !== undefined || ok.panelTheme !== undefined) && app.hub.statsClientCount > 0) app.hub.broadcastStats(app.statsPayload());
+    if (ok.telegramToken !== undefined) {
+      note = ok.telegramToken ? 'Токен бота Telegram сохранён.' : 'Токен бота Telegram удалён.';
+      app.journal('info', 'settings', note); // сам токен в журнал не пишется
+    }
     if (Object.keys(ok).some((k) => k.startsWith('statsOverlay')) || ok.language !== undefined) app.hub.broadcastStats(app.statsPayload());
     if (ok.klipyApiKey !== undefined || ok.freesoundApiKey !== undefined) {
       app.finder.registerKeys();
@@ -248,10 +255,11 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
     const r = app.db.getReward(p.id);
     if (!r) throw new HttpError(404, 'Награда не найдена');
     const user = String((body as { user?: string } | null)?.user ?? 'test_viewer').slice(0, 25);
+    const input = String((body as { input?: string } | null)?.input ?? '').slice(0, 500);
     const id = `sim-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const result = app.router.handleNotification({
       metadata: { message_id: id, message_type: 'notification', message_timestamp: new Date().toISOString(), subscription_type: 'channel.channel_points_custom_reward_redemption.add', subscription_version: '1' },
-      payload: { event: { id, broadcaster_user_id: app.auth.user?.id ?? '', user_id: '0', user_login: user, user_name: user, user_input: '', status: 'fulfilled', reward: { id: r.id, title: r.title, cost: r.cost, prompt: r.prompt }, redeemed_at: new Date().toISOString() } },
+      payload: { event: { id, broadcaster_user_id: app.auth.user?.id ?? '', user_id: '0', user_login: user, user_name: user, user_input: input, status: 'fulfilled', reward: { id: r.id, title: r.title, cost: r.cost, prompt: r.prompt }, redeemed_at: new Date().toISOString() } },
     });
     return { result };
   });
@@ -395,6 +403,72 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
   add('POST', '/api/queue/pause', () => { app.queue.setPaused(true); return { ok: true }; });
   add('POST', '/api/queue/resume', () => { app.queue.setPaused(false); return { ok: true }; });
   add('POST', '/api/queue/remove/:id', (_q, _r, p) => ({ removed: app.queue.remove(p.id) }));
+  // 1.9.0: текст зрителя, ждущий проверки: озвучить, показать без озвучки, отклонить (баллы возвращаются).
+  add('POST', '/api/queue/held/:id/:action', (_q, _r, p) => {
+    if (!['voice', 'mute', 'reject'].includes(p.action)) throw new HttpError(400, 'Неизвестное действие');
+    try { app.decideHeld(p.id, p.action as 'voice' | 'mute' | 'reject'); } catch (e) { throw new HttpError(400, (e as Error).message); }
+    return { ok: true };
+  });
+
+  // ---------------- Счётчики (1.9.0) ----------------
+  add('GET', '/api/counters', () => ({ counters: app.counters.all() }));
+  add('POST', '/api/counters', (_q, _r, _p, body) => {
+    try { const c = app.counters.add(String((body as { name?: string } | null)?.name ?? '')); app.countersChanged(); return c; } catch (e) { throw new HttpError(400, (e as Error).message); }
+  });
+  add('POST', '/api/counters/:id', (_q, _r, p, body) => {
+    try { const c = app.counters.update(p.id, (body ?? {}) as Record<string, unknown>); app.countersChanged(); return c; } catch (e) { throw new HttpError(400, (e as Error).message); }
+  });
+  add('POST', '/api/counters/:id/delete', (_q, _r, p) => {
+    const removed = app.counters.remove(p.id);
+    app.countersChanged();
+    return { removed };
+  });
+
+  // ---------------- Итоги в Telegram (1.9.0) ----------------
+  add('POST', '/api/telegram/test', async () => {
+    try { return await app.telegramTest(); } catch (e) { throw new HttpError(400, (e as Error).message); }
+  });
+  add('POST', '/api/telegram/chats', async () => {
+    try { return { chats: await app.telegramChats() }; } catch (e) { throw new HttpError(400, (e as Error).message); }
+  });
+
+  // ---------------- Резервная копия (1.9.0) ----------------
+  add('GET', '/api/backup/list', () => ({ backups: listBackups(app.opts.paths.dataDir) }));
+  add('POST', '/api/backup/create', () => {
+    try { return app.createBackup('backup'); } catch (e) { throw new HttpError(400, `Резервная копия не создана: ${(e as Error).message}`); }
+  });
+  add('GET', '/api/backup/download/:name', (req, res, p) => {
+    if (!BACKUP_NAME.test(p.name)) throw new HttpError(404, 'Файл не найден');
+    const file = path.join(backupDir(app.opts.paths.dataDir), p.name);
+    if (!fs.existsSync(file)) throw new HttpError(404, 'Файл не найден');
+    res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': fs.statSync(file).size, 'Content-Disposition': `attachment; filename="${p.name}"`, 'Cache-Control': 'no-store' });
+    if (req.method === 'HEAD') { res.end(); return; }
+    fs.createReadStream(file).pipe(res);
+  });
+  let restoring = false;
+  add('PUT', '/api/backup/restore', async (req) => {
+    if (restoring) throw new HttpError(409, 'Восстановление уже идёт');
+    restoring = true;
+    const dir = backupDir(app.opts.paths.dataDir);
+    fs.mkdirSync(dir, { recursive: true });
+    const upload = path.join(dir, `upload-${crypto.randomBytes(6).toString('hex')}.zip`);
+    try {
+      await receiveToFile(req, upload, 4 * 1024 ** 3);
+      let info;
+      try { info = prepareRestore(upload, app.opts.paths.dataDir, APP_VERSION); } catch (e) { throw new HttpError(400, (e as Error).message); }
+      // Текущие данные — в копию «перед восстановлением»: можно вернуть, если выбрали не тот файл.
+      try { app.createBackup('before-restore'); } catch (e) {
+        cancelPendingRestore(app.opts.paths.dataDir);
+        throw new HttpError(400, `Не удалось сохранить текущие данные перед восстановлением: ${(e as Error).message}`);
+      }
+      app.journal('info', 'backup', `Восстановление из копии от ${new Date(info.createdAt).toLocaleString('ru-RU')}: бот перезапускается`);
+      if (hooks.onRestart) setTimeout(() => hooks.onRestart!(), 500);
+      return { ok: true, restarting: !!hooks.onRestart, ...info };
+    } finally {
+      restoring = false;
+      fs.rmSync(upload, { force: true });
+    }
+  }, true);
 
   add('POST', '/api/autostart', async (_q, _r, _p, body) => {
     const enabled = Boolean((body as { enabled?: boolean } | null)?.enabled);
@@ -407,7 +481,8 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
   add('POST', '/api/obs/launch', () => launchObs(app));
   add('POST', '/api/open-folder', (_q, _r, _p, body) => {
     const which = String((body as { which?: string } | null)?.which ?? '');
-    const dirs: Record<string, string> = { logs: app.opts.paths.logDir, media: app.opts.paths.mediaDir, backups: app.opts.paths.backupDir, data: app.opts.paths.dataDir };
+    const dirs: Record<string, string> = { logs: app.opts.paths.logDir, media: app.opts.paths.mediaDir, backups: app.opts.paths.backupDir, data: app.opts.paths.dataDir, botbackups: backupDir(app.opts.paths.dataDir) };
+    if (which === 'botbackups') fs.mkdirSync(dirs.botbackups, { recursive: true });
     const dir = dirs[which];
     if (!dir) throw new HttpError(400, 'Неизвестная папка');
     spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref();
@@ -454,7 +529,7 @@ export function createServer(app: App, hooks: ServerHooks): http.Server {
       if (url.pathname === '/' ) { res.writeHead(302, { Location: '/panel/' }); res.end(); return; }
       if (url.pathname === '/overlay' || url.pathname === '/overlay/') return serveStatic(res, path.join(PUBLIC_DIR, 'overlay'), 'index.html', req);
       if (url.pathname.startsWith('/overlay/')) return serveStatic(res, path.join(PUBLIC_DIR, 'overlay'), url.pathname.slice('/overlay/'.length), req);
-      if (url.pathname === '/stats/dock' || url.pathname === '/stats/overlay') return serveStatic(res, path.join(PUBLIC_DIR, 'stats'), url.pathname.slice('/stats/'.length) + '.html', req);
+      if (url.pathname === '/stats/dock' || url.pathname === '/stats/overlay' || url.pathname === '/stats/counter') return serveStatic(res, path.join(PUBLIC_DIR, 'stats'), url.pathname.slice('/stats/'.length) + '.html', req);
       if (url.pathname.startsWith('/stats/')) return serveStatic(res, path.join(PUBLIC_DIR, 'stats'), url.pathname.slice('/stats/'.length), req);
       if (url.pathname === '/panel') { res.writeHead(302, { Location: '/panel/' }); res.end(); return; }
       if (url.pathname.startsWith('/panel/')) return serveStatic(res, path.join(PUBLIC_DIR, 'panel'), url.pathname.slice('/panel/'.length) || 'index.html', req);
@@ -521,6 +596,24 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
     });
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
+  });
+}
+
+/** Приём большого файла (резервная копия) сразу на диск, без чтения в память. */
+function receiveToFile(req: IncomingMessage, file: string, limit: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length'] ?? 0);
+    const tooBig = () => new HttpError(413, `Слишком большой файл (максимум ${Math.round(limit / 1024 ** 3)} ГБ)`);
+    if (declared > limit) { reject(tooBig()); req.resume(); return; }
+    const out = fs.createWriteStream(file);
+    let size = 0;
+    let failed = false;
+    const fail = (e: Error) => { if (failed) return; failed = true; out.destroy(); req.destroy(); reject(e); };
+    req.on('data', (c: Buffer) => { size += c.length; if (size > limit) fail(tooBig()); });
+    req.on('error', fail);
+    out.on('error', fail);
+    out.on('finish', () => { if (!failed) { if (size === 0) reject(new HttpError(400, 'Пустой файл')); else resolve(); } });
+    req.pipe(out);
   });
 }
 

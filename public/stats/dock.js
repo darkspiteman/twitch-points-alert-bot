@@ -8,7 +8,7 @@
   var connected = false;
 
   var TILE_IDS = ['viewers', 'chatters', 'followers', 'bitrate', 'subs', 'subPoints', 'resolution', 'dropped', 'cpu'];
-  var SECTION_IDS = ['queue', 'feed', 'chat', 'summary'];
+  var SECTION_IDS = ['counters', 'queue', 'feed', 'chat', 'summary'];
   /** Микрофон молчит дольше — предупреждение (во время эфира). */
   var MIC_SILENT_MS = 2 * 60000;
 
@@ -203,6 +203,75 @@
     for (var i = 0; i < show.length; i++) ul.appendChild(queueLine(show[i], false));
     if (q.items.length > show.length) ul.appendChild(el('li', 'empty', t('q_more', [q.items.length - show.length])));
     if (!q.current && !q.items.length) ul.appendChild(el('li', 'empty', q.paused ? t('q_emptyPaused') : t('q_empty')));
+  }
+
+  // ---------------- Текст ждёт проверки (1.9.0) ----------------
+
+  function postJson(path, body) {
+    return fetch(path, { method: 'POST', headers: { 'x-tab-request': '1', 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }, function () { return { ok: r.ok, j: {} }; }); })
+      .then(function (res) { if (!res.ok) toast((res.j && res.j.error) || 'Error', false); return res; })
+      .catch(function () { toast(t('lost'), false); return { ok: false, j: {} }; });
+  }
+
+  var heldSig = '';
+  function renderHeld() {
+    var box = document.getElementById('held');
+    var list = (data.queue && data.queue.held) || [];
+    // Всегда видно, даже если раздел «Оповещения» скрыт: иначе тексты ждали бы вечно.
+    box.hidden = !list.length;
+    var sig = JSON.stringify([list, S.lang()]);
+    if (sig === heldSig) return;
+    heldSig = sig;
+    document.getElementById('held-title').textContent = t('heldTitle') + ' · ' + list.length;
+    var ul = document.getElementById('held-list');
+    while (ul.firstChild) ul.removeChild(ul.firstChild);
+    list.forEach(function (it) {
+      var li = el('li', 'held-item');
+      var txt = el('div', 'held-text');
+      var who = el('div', 'held-who');
+      who.appendChild(el('b', null, it.userName));
+      who.appendChild(document.createTextNode(' · ' + it.rewardTitle));
+      txt.appendChild(who);
+      txt.appendChild(el('div', 'held-say', '«' + it.text + '»'));
+      li.appendChild(txt);
+      var btns = el('div', 'held-btns');
+      var send = function (action) { return function () { postJson('/api/queue/held/' + encodeURIComponent(it.id) + '/' + action); }; };
+      btns.appendChild(iconButton('✔ ' + t('heldVoice'), t('heldVoiceTitle'), send('voice'), 'ok'));
+      if (it.hasMedia) btns.appendChild(iconButton('🔇', t('heldMuteTitle'), send('mute')));
+      btns.appendChild(iconButton('✕', t('heldRejectTitle'), send('reject'), 'no'));
+      li.appendChild(btns);
+      ul.appendChild(li);
+    });
+  }
+
+  // ---------------- Счётчики (1.9.0) ----------------
+
+  var countersSig = '';
+  function renderCounters() {
+    var box = document.getElementById('counters');
+    var list = data.counters || [];
+    box.hidden = hidden.indexOf('counters') >= 0;
+    if (box.hidden) { countersSig = ''; return; }
+    var sig = JSON.stringify([list, S.lang()]);
+    if (sig === countersSig) return;
+    countersSig = sig;
+    while (box.firstChild) box.removeChild(box.firstChild);
+    box.appendChild(el('h2', null, t('counters')));
+    if (!list.length) { box.appendChild(el('div', 'empty', t('countersEmpty'))); return; }
+    var grid = el('div', 'counter-grid');
+    list.forEach(function (c) {
+      var row = el('div', 'counter');
+      var name = el('span', 'c-name', c.name);
+      if (!c.show) { name.classList.add('hidden-on-screen'); name.title = t('counterHidden'); }
+      row.appendChild(name);
+      var change = function (d) { return function () { postJson('/api/counters/' + encodeURIComponent(c.id), { delta: d }); }; };
+      row.appendChild(iconButton('−', t('counterMinus'), change(-1)));
+      row.appendChild(el('span', 'c-value', S.num(c.value)));
+      row.appendChild(iconButton('+', t('counterPlus'), change(1), 'plus'));
+      grid.appendChild(row);
+    });
+    box.appendChild(grid);
   }
 
   // ---------------- События и чат ----------------
@@ -423,7 +492,9 @@
     renderTop();
     renderMic();
     renderNotes();
+    renderHeld();
     renderTiles();
+    renderCounters();
     renderQueue();
     renderLists();
     renderSummary();
@@ -437,7 +508,12 @@
   }
 
   setConn(false);
-  S.connect(function (m) { data = m; render(); }, setConn);
+  // 2.0.0: палитра как у панели бота («Настройки» → «Основное» → «Цвета панели»).
+  function applyTheme(t) {
+    if (t === 'midnight' || t === 'graphite') document.documentElement.setAttribute('data-palette', t);
+    else document.documentElement.removeAttribute('data-palette');
+  }
+  S.connect(function (m) { data = m; applyTheme(m.theme); render(); }, setConn, 'dock');
   setInterval(function () { tickSession(); }, 1000);
   // «N мин назад» в списках — раз в 30 с, даже без новых данных.
   setInterval(function () { if (data && connected) renderLists(true); }, 30000);

@@ -74,7 +74,7 @@ export function codecWarnings(tracks: CodecTrack[]): string[] {
   if (audio.length) parts.push(`звук в формате ${[...new Set(audio.map((t) => t.name))].join(', ')}`);
   const hevcOnly = video.length > 0 && video.every((t) => t.id === 'hvc1' || t.id === 'hev1') && !audio.length;
   const verdict = hevcOnly ? 'может не воспроизводиться в OBS и Streamlabs' : (video.length ? 'не воспроизводится' : 'не воспроизводится со звуком') + ' в OBS и Streamlabs';
-  return [`В файле ${parts.join(' и ')} — ${verdict}. Нажмите «Перекодировать» (раздел «Медиа») или сохраните файл как MP4 (H.264 + AAC).`];
+  return [`В файле ${parts.join(' и ')} — ${verdict}. Нажмите «Перекодировать» (раздел «Медиатека») или сохраните файл как MP4 (H.264 + AAC).`];
 }
 
 // ---------------- MP4 ----------------
